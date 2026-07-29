@@ -1,0 +1,235 @@
+/**
+ * Thin Fly Machines API client (injectable fetch for tests).
+ * @see https://fly.io/docs/machines/api/
+ */
+import { FLY_MACHINES_API_BASE } from "./fly-shared.js";
+
+export type FetchLike = (
+  input: string,
+  init?: RequestInit,
+) => Promise<Response>;
+
+export interface FlyMachinesClientOptions {
+  token: string;
+  app: string;
+  apiBase?: string;
+  fetchImpl?: FetchLike;
+  /** Max retries on 429 / network errors. */
+  maxRetries?: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export interface FlyVolume {
+  id: string;
+  name: string;
+  region: string;
+  size_gb: number;
+  state?: string;
+}
+
+export interface FlyMachine {
+  id: string;
+  name?: string;
+  state?: string;
+  region?: string;
+  config?: Record<string, unknown>;
+}
+
+export interface CreateVolumeInput {
+  name: string;
+  region: string;
+  sizeGb: number;
+}
+
+export interface CreateMachineInput {
+  name: string;
+  region: string;
+  image: string;
+  env: Record<string, string>;
+  volumeId: string;
+  volumeMountPath?: string;
+  files?: Array<{ guestPath: string; rawValue: string }>;
+  cpus?: number;
+  memoryMb?: number;
+}
+
+/* v8 ignore start */
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+/* v8 ignore stop */
+
+export class FlyMachinesClient {
+  readonly app: string;
+  private readonly token: string;
+  private readonly apiBase: string;
+  private readonly fetchImpl: FetchLike;
+  private readonly maxRetries: number;
+  private readonly sleep: (ms: number) => Promise<void>;
+
+  constructor(opts: FlyMachinesClientOptions) {
+    this.token = opts.token;
+    this.app = opts.app;
+    this.apiBase = (opts.apiBase ?? FLY_MACHINES_API_BASE).replace(/\/$/, "");
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.maxRetries = opts.maxRetries ?? 3;
+    this.sleep = opts.sleep ?? defaultSleep;
+  }
+
+  async createVolume(input: CreateVolumeInput): Promise<FlyVolume> {
+    return this.request<FlyVolume>("POST", `/apps/${this.app}/volumes`, {
+      name: input.name,
+      region: input.region,
+      size_gb: input.sizeGb,
+    });
+  }
+
+  async getVolume(volumeId: string): Promise<FlyVolume> {
+    return this.request<FlyVolume>(
+      "GET",
+      `/apps/${this.app}/volumes/${volumeId}`,
+    );
+  }
+
+  async createMachine(input: CreateMachineInput): Promise<FlyMachine> {
+    const files = (input.files ?? []).map((f) => ({
+      guest_path: f.guestPath,
+      raw_value: Buffer.from(f.rawValue, "utf8").toString("base64"),
+    }));
+    return this.request<FlyMachine>("POST", `/apps/${this.app}/machines`, {
+      name: input.name,
+      region: input.region,
+      config: {
+        image: input.image,
+        env: input.env,
+        auto_destroy: false,
+        restart: { policy: "no" },
+        guest: {
+          cpus: input.cpus ?? 1,
+          cpu_kind: "shared",
+          memory_mb: input.memoryMb ?? 1024,
+        },
+        mounts: [
+          {
+            volume: input.volumeId,
+            path: input.volumeMountPath ?? "/workspace",
+          },
+        ],
+        files,
+        // NanoClaw owns start/stop — disable Fly autostop.
+        services: [],
+      },
+    });
+  }
+
+  async getMachine(machineId: string): Promise<FlyMachine> {
+    return this.request<FlyMachine>(
+      "GET",
+      `/apps/${this.app}/machines/${machineId}`,
+    );
+  }
+
+  async startMachine(machineId: string): Promise<void> {
+    await this.request<unknown>(
+      "POST",
+      `/apps/${this.app}/machines/${machineId}/start`,
+    );
+  }
+
+  async stopMachine(machineId: string): Promise<void> {
+    await this.request<unknown>(
+      "POST",
+      `/apps/${this.app}/machines/${machineId}/stop`,
+    );
+  }
+
+  async waitMachine(
+    machineId: string,
+    state: string,
+    timeoutSec = 120,
+  ): Promise<FlyMachine> {
+    return this.request<FlyMachine>(
+      "GET",
+      `/apps/${this.app}/machines/${machineId}/wait?state=${encodeURIComponent(state)}&timeout=${timeoutSec}`,
+    );
+  }
+
+  async updateMachineEnv(
+    machineId: string,
+    config: Record<string, unknown>,
+  ): Promise<FlyMachine> {
+    return this.request<FlyMachine>(
+      "POST",
+      `/apps/${this.app}/machines/${machineId}`,
+      { config },
+    );
+  }
+
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<T> {
+    let attempt = 0;
+    let lastError: unknown;
+    while (attempt <= this.maxRetries) {
+      try {
+        const response = await this.fetchImpl(`${this.apiBase}${path}`, {
+          method,
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        if (response.status === 429 && attempt < this.maxRetries) {
+          const retryAfter = Number(response.headers.get("retry-after") ?? "1");
+          await this.sleep(Math.max(250, retryAfter * 1000));
+          attempt += 1;
+          continue;
+        }
+        if (!response.ok) {
+          const text = await response.text().catch(() => "");
+          throw new Error(
+            `Fly Machines API ${method} ${path} failed: ${response.status} ${text}`,
+          );
+        }
+        if (response.status === 204) return undefined as T;
+        const text = await response.text();
+        if (!text) return undefined as T;
+        return JSON.parse(text) as T;
+      } catch (error) {
+        lastError = error;
+        const isNetwork =
+          error instanceof TypeError ||
+          (error instanceof Error &&
+            /fetch|network|ECONN/i.test(error.message));
+        if (!isNetwork || attempt >= this.maxRetries) throw error;
+        await this.sleep(250 * 2 ** attempt);
+        attempt += 1;
+      }
+    }
+    /* v8 ignore start — loop always throws or returns before falling through */
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+    /* v8 ignore stop */
+  }
+}
+
+export function createFlyMachinesClientFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  overrides: Partial<FlyMachinesClientOptions> = {},
+): FlyMachinesClient {
+  const token = (overrides.token ?? env.FLY_API_TOKEN ?? "").trim();
+  const app = (overrides.app ?? env.FLY_APP_AGENTS ?? "").trim();
+  if (!token) throw new Error("FLY_API_TOKEN is required for fly runtime");
+  if (!app) throw new Error("FLY_APP_AGENTS is required for fly runtime");
+  return new FlyMachinesClient({
+    token,
+    app,
+    apiBase: overrides.apiBase ?? env.FLY_MACHINES_API_BASE,
+    fetchImpl: overrides.fetchImpl,
+    maxRetries: overrides.maxRetries,
+    sleep: overrides.sleep,
+  });
+}
