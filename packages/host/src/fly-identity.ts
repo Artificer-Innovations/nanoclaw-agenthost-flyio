@@ -51,11 +51,10 @@ export function writeFlyIdentity(
     ...identity,
     updatedAt: new Date().toISOString(),
   };
-  fs.writeFileSync(
-    identityPath(sessionDirectory),
-    `${JSON.stringify(next, null, 2)}\n`,
-    { mode: 0o600 },
-  );
+  const target = identityPath(sessionDirectory);
+  const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(tmp, target);
 }
 
 export function clearFlyIdentity(sessionDirectory: string): void {

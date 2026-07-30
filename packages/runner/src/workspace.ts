@@ -118,7 +118,9 @@ function ensurePeerSqliteFiles(root: string): void {
     db.close();
   }
 
-  if (!fs.existsSync(outboundPath)) {
+  // Always ensure outbound schema too — volumes may keep stub/placeholder
+  // outbound.db from older images or the Node placeholder path above.
+  {
     const db = new Database(outboundPath);
     db.exec("PRAGMA journal_mode = DELETE");
     db.exec(`
@@ -143,8 +145,8 @@ function ensurePeerSqliteFiles(root: string): void {
     `);
     db.close();
   }
-  /* v8 ignore stop */
 }
+/* v8 ignore stop */
 
 function copyBootstrapAgentFiles(
   agentDir: string,

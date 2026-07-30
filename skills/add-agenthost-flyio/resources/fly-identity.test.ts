@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -45,6 +46,21 @@ describe("fly-identity", () => {
     expect(readFlyIdentity(dir)).toBeNull();
     writeFileSync(identityPath(dir), JSON.stringify({ machineId: "only" }));
     expect(readFlyIdentity(dir)).toBeNull();
+  });
+
+  it("writes identity atomically via tmp + rename", () => {
+    dir = mkdtempSync(path.join(tmpdir(), "fly-id-atomic-"));
+    writeFlyIdentity(dir, {
+      machineId: "m1",
+      volumeId: "v1",
+      app: "agents",
+      region: "iad",
+      image: "img:latest",
+    });
+    const entries = readdirSync(dir);
+    expect(entries.filter((e) => e.endsWith(".tmp"))).toEqual([]);
+    expect(entries).toContain(".fly-machine.json");
+    expect(readFlyIdentity(dir)?.machineId).toBe("m1");
   });
 
   it("clears identity file", () => {

@@ -1,5 +1,7 @@
 # Quickstart — nanoclaw-agenthost-flyio
 
+Short checklist. For Fly app setup, agent image build, mailbox networking, and OneCLI, use **[docs/install.md](./docs/install.md)**.
+
 ## 1. Peers first
 
 ```bash
@@ -47,4 +49,4 @@ Restart host → send a message → confirm Machine start/stop.
 
 ## Local laptop + ngrok
 
-For host and OneCLI on your dev machine with Fly Machines dialing through tunnels, see [docs/local-dev-fly-ngrok.md](./docs/local-dev-fly-ngrok.md).
+For host and OneCLI on your dev machine with Fly Machines dialing through tunnels, see [docs/local-dev-fly-ngrok.md](./docs/local-dev-fly-ngrok.md). Full install (any topology): [docs/install.md](./docs/install.md).

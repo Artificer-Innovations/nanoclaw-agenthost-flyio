@@ -11,7 +11,7 @@ pnpm exec nanoclaw-agenthost-flyio verify
 
 Without real Fly credentials, unit/integration tests mock the Machines API.
 
-For a live smoke with **host + OneCLI on your laptop** (ngrok to sessionio + OneCLI proxy), see [local-dev-fly-ngrok.md](./local-dev-fly-ngrok.md).
+Full live setup: [install.md](./install.md). Laptop + ngrok detail: [local-dev-fly-ngrok.md](./local-dev-fly-ngrok.md).
 
 Minimal live outline:
 

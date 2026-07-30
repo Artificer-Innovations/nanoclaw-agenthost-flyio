@@ -343,6 +343,7 @@ Uninstall order if removing packages: flyio → then sessionio/agenthosts (see s
 
 ## Related
 
+- [install.md](./install.md) — full install (Fly app, image, networking options)
 - [QUICKSTART.md](../QUICKSTART.md)
 - [docs/sandbox-smoke.md](./sandbox-smoke.md) — package install without live Fly
 - Skill: `.claude/skills/add-agenthost-flyio/SKILL.md` after `sync-skill`

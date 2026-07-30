@@ -12,9 +12,11 @@ Run NanoClaw agents on **Fly Machines** that start on wake and stop when idle. R
 - NanoClaw v2 host with `nanoclaw-sessionio` and `nanoclaw-agenthosts` already installed and `verify` green
 - Node ≥ 20, pnpm
 - Fly org/app + `FLY_API_TOKEN`
-- Agent image Fly can pull (`FLY_AGENT_IMAGE`)
+- Agent image Fly can pull (`FLY_AGENT_IMAGE`) — **linux/amd64**
 - OneCLI reachable from Machines (`GATEWAY_BASE_URL` / rewrite — not `host.docker.internal`)
-- Sessionio HTTP listen URL reachable from Machines (`FLY_SESSIONIO_BASE_URL` or `SESSIONIO_BASE_URL`) via **6PN**, **Flycast**, or **WireGuard**
+- Sessionio HTTP listen URL reachable from Machines (`FLY_SESSIONIO_BASE_URL` or `SESSIONIO_BASE_URL`) via **public tunnel**, **6PN**, **Flycast**, or **WireGuard**
+
+Detailed install (app, image, mailbox, OneCLI, troubleshooting): package `docs/install.md`. Laptop + ngrok: `docs/local-dev-fly-ngrok.md`.
 
 ## Install order
 
