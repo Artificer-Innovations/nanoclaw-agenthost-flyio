@@ -229,10 +229,7 @@ function buildFlyWebchatCredentialsJson(
   return `${JSON.stringify(parsed, null, 2)}\n`;
 }
 
-function rewriteWebchatMdForFly(
-  body: string,
-  env: NodeJS.ProcessEnv,
-): string {
+function rewriteWebchatMdForFly(body: string, env: NodeJS.ProcessEnv): string {
   const apiBase = resolveFlyWebchatApiBase(env);
   let next = body;
   if (apiBase) {
@@ -424,8 +421,7 @@ async function ensureIdentityAndStart(
       gotRemote = true;
       machineState = remote.state;
       const cfg = remote.config ?? {};
-      remoteImage =
-        typeof cfg.image === "string" ? cfg.image : prevImage;
+      remoteImage = typeof cfg.image === "string" ? cfg.image : prevImage;
       if (cfg.env && typeof cfg.env === "object") {
         remoteEnv = cfg.env as Record<string, string>;
       }
@@ -436,8 +432,7 @@ async function ensureIdentityAndStart(
         }`,
       );
     }
-    const running =
-      machineState === "started" || machineState === "starting";
+    const running = machineState === "started" || machineState === "starting";
     const imageChanged = Boolean(image) && image !== remoteImage;
     // Push stable hosthook env (e.g. AGENTTRACE_*) without comparing OneCLI
     // tokens, which can change every wake and would restart every message.

@@ -177,9 +177,8 @@ describe("FlyMachinesClient", () => {
   });
 
   it("createMachine without files uses empty list", async () => {
-    const fetchImpl = vi.fn(
-      async (_url: string, _init?: RequestInit) =>
-        jsonResponse({ id: "mach_nf", state: "created" }),
+    const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) =>
+      jsonResponse({ id: "mach_nf", state: "created" }),
     );
     const client = new FlyMachinesClient({
       token: "t",
