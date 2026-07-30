@@ -352,8 +352,9 @@ async function ensureIdentityAndStart(
       if (typeof mod.runContainerEnvContributors === "function") {
         hosthookEnv = mod.runContainerEnvContributors(Object.keys(baseEnv));
       }
+      /* v8 ignore next 3 — missing hosthooks module on bare package installs */
     } catch {
-      // Package unit tests / hosts without hosthooks — leave empty.
+      // leave empty
     }
   }
   const machineEnv = {
@@ -466,7 +467,7 @@ async function ensureIdentityAndStart(
 }
 
 /** Fly refuses start while a config update is replacing the Machine. */
-async function startFlyMachineWhenReady(
+export async function startFlyMachineWhenReady(
   client: FlyMachinesClient,
   machineId: string,
   opts: { timeoutMs?: number; sleepMs?: number } = {},
@@ -550,6 +551,7 @@ async function doWakeFly(
   env: NodeJS.ProcessEnv,
 ): Promise<boolean> {
   // Re-check after waiting on another wake / before long ensure.
+  /* v8 ignore next 4 — coalesced wakes share one doWakeFly; map is empty at entry */
   const existing = activeMachines.get(session.id);
   if (existing && !existing.killing) {
     return true;

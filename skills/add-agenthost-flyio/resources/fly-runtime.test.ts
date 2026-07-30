@@ -8,7 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DATA_DIR } from "./config.js";
+import { DATA_DIR, GROUPS_DIR } from "./config.js";
 import {
   FLY_WAKE_BLOCKED_FILENAME,
   WAKE_FAIL_BLOCK_AFTER,
@@ -20,6 +20,7 @@ import {
   killFly,
   resetFlyDriverStateForTests,
   setFlyWakeDeps,
+  startFlyMachineWhenReady,
   wakeFly,
   writeFlyIdentity,
 } from "./fly-runtime.js";
@@ -635,5 +636,257 @@ describe("fly-runtime", () => {
     expect(await wakeFly({ id: "s17", agent_group_id: "missing-group" })).toBe(
       true,
     );
+  });
+
+  it("rewrites webchat guest files and credentials for Fly", async () => {
+    const folder = "webchat-group";
+    const groupDir = path.join(GROUPS_DIR, folder);
+    mkdirSync(path.join(groupDir, ".webchat"), { recursive: true });
+    writeFileSync(
+      path.join(groupDir, "WEBCHAT.md"),
+      [
+        "Configured apiBase: `http://host.docker.internal:3201`",
+        "Also see http://host.docker.internal:3201/api",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      path.join(groupDir, "container.json"),
+      '{"provider":"claude"}',
+    );
+    writeFileSync(path.join(groupDir, "CLAUDE.md"), "hi");
+    writeFileSync(
+      path.join(groupDir, ".webchat", "credentials.json"),
+      "{not-json",
+    );
+    process.env.WEBCHAT_PUBLIC_BASE_URL = "https://chat.example.test";
+
+    let guestFiles: Array<{ guestPath: string; rawValue: string }> = [];
+    setFlyWakeDeps({
+      resolveSessionDir: () => sessionDir,
+      resolveGroupFolder: () => folder,
+      createClient: () =>
+        mockClient({
+          createMachine: async (input) => {
+            guestFiles = input.files ?? [];
+            return { id: "mach_wc", state: "created", region: "iad" };
+          },
+        }),
+      applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
+      waitHealth: async () => {},
+    });
+    expect(await wakeFly({ id: "swc", agent_group_id: "ag" })).toBe(true);
+
+    const webchat = guestFiles.find((f) => f.guestPath.endsWith("WEBCHAT.md"));
+    expect(webchat?.rawValue).toContain("https://chat.example.test");
+    expect(webchat?.rawValue).toContain("## Fly / remote runtime");
+    expect(webchat?.rawValue).toContain("send_file");
+    expect(webchat?.rawValue).not.toContain("host.docker.internal");
+
+    const creds = guestFiles.find((f) =>
+      f.guestPath.endsWith(".webchat/credentials.json"),
+    );
+    expect(JSON.parse(creds!.rawValue).apiBase).toBe(
+      "https://chat.example.test",
+    );
+
+    rmSync(groupDir, { recursive: true, force: true });
+  });
+
+  it("skips Fly section append when WEBCHAT.md already has it", async () => {
+    const folder = "webchat-existing";
+    const groupDir = path.join(GROUPS_DIR, folder);
+    mkdirSync(path.join(groupDir, ".webchat"), { recursive: true });
+    writeFileSync(
+      path.join(groupDir, "WEBCHAT.md"),
+      "## Fly / remote runtime\nAlready there\n",
+    );
+    writeFileSync(
+      path.join(groupDir, ".webchat", "credentials.json"),
+      JSON.stringify({ token: "t" }),
+    );
+    process.env.WEBCHAT_FLY_API_BASE = "https://fly-chat.example.test";
+
+    let guestFiles: Array<{ guestPath: string; rawValue: string }> = [];
+    setFlyWakeDeps({
+      resolveSessionDir: () => sessionDir,
+      resolveGroupFolder: () => folder,
+      createClient: () =>
+        mockClient({
+          createMachine: async (input) => {
+            guestFiles = input.files ?? [];
+            return { id: "mach_we", state: "created", region: "iad" };
+          },
+        }),
+      applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
+      waitHealth: async () => {},
+    });
+    expect(await wakeFly({ id: "swe", agent_group_id: "ag" })).toBe(true);
+    const webchat = guestFiles.find((f) => f.guestPath.endsWith("WEBCHAT.md"));
+    expect(webchat?.rawValue.match(/## Fly \/ remote runtime/g)).toHaveLength(
+      1,
+    );
+    rmSync(groupDir, { recursive: true, force: true });
+  });
+
+  it("resolveFlyWebchatApiBase skips bad urls and bare docker hosts", async () => {
+    const { resolveFlyWebchatApiBase } = await import("./fly-runtime.js");
+    expect(
+      resolveFlyWebchatApiBase(
+        {
+          WEBCHAT_FLY_API_BASE: "http://[::",
+          WEBCHAT_PUBLIC_BASE_URL: "localhost:3201",
+          WEBCHAT_CONTAINER_API_BASE: "127.0.0.1:3201",
+        },
+        () => ({}),
+      ),
+    ).toBeNull();
+    expect(
+      resolveFlyWebchatApiBase(
+        { WEBCHAT_PUBLIC_BASE_URL: "chat.example.test:443" },
+        () => ({}),
+      ),
+    ).toBe("http://chat.example.test:443");
+  });
+
+  it("retries start while machine is getting replaced", async () => {
+    let attempts = 0;
+    await startFlyMachineWhenReady(
+      mockClient({
+        getMachine: async () => ({ id: "m", state: "stopped" }),
+        startMachine: async () => {
+          attempts += 1;
+          if (attempts < 2) throw new Error("machine is getting replaced");
+        },
+      }),
+      "m",
+      { timeoutMs: 5_000, sleepMs: 1 },
+    );
+    expect(attempts).toBe(2);
+  });
+
+  it("times out when machine stays unstartable", async () => {
+    await expect(
+      startFlyMachineWhenReady(
+        mockClient({
+          getMachine: async () => ({ id: "m", state: "stopped" }),
+          startMachine: async () => {
+            throw new Error("unable to start machine from current state");
+          },
+        }),
+        "m",
+        { timeoutMs: 30, sleepMs: 5 },
+      ),
+    ).rejects.toThrow(/unable to start machine from current state/);
+  });
+
+  it("times out with non-Error replace failures", async () => {
+    await expect(
+      startFlyMachineWhenReady(
+        mockClient({
+          getMachine: async () => ({ id: "m", state: "stopped" }),
+          startMachine: async () => {
+            throw "getting replaced";
+          },
+        }),
+        "m",
+        { timeoutMs: 30, sleepMs: 5 },
+      ),
+    ).rejects.toThrow(/not startable within/);
+  });
+
+  it("rethrows non-replace start errors immediately", async () => {
+    await expect(
+      startFlyMachineWhenReady(
+        mockClient({
+          getMachine: async () => ({ id: "m", state: "stopped" }),
+          startMachine: async () => {
+            throw new Error("permission denied");
+          },
+        }),
+        "m",
+        { timeoutMs: 1_000, sleepMs: 1 },
+      ),
+    ).rejects.toThrow(/permission denied/);
+  });
+
+  it("skips config update when getMachine fails", async () => {
+    writeFlyIdentity(sessionDir, {
+      machineId: "mach_gone",
+      volumeId: "vol",
+      app: "agents",
+      region: "iad",
+      image: "img",
+    });
+    const update = vi.fn(async () => ({ id: "mach_gone", state: "updated" }));
+    let getCalls = 0;
+    setFlyWakeDeps({
+      resolveSessionDir: () => sessionDir,
+      createClient: () =>
+        mockClient({
+          updateMachineEnv: update,
+          getMachine: async () => {
+            getCalls += 1;
+            // First call is the config-update probe; later calls are start readiness.
+            if (getCalls === 1) throw "not-an-error-object";
+            return {
+              id: "mach_gone",
+              state: "stopped",
+              config: { image: "img" },
+            };
+          },
+          startMachine: async () => {},
+        }),
+      applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
+      waitHealth: async () => {},
+    });
+    expect(await wakeFly({ id: "sgone", agent_group_id: "ag" })).toBe(true);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("merges containerEnv hosthook deps into machine env", async () => {
+    let envSeen: Record<string, string> | undefined;
+    setFlyWakeDeps({
+      resolveSessionDir: () => sessionDir,
+      createClient: () =>
+        mockClient({
+          createMachine: async (input) => {
+            envSeen = input.env;
+            return { id: "mach_he", state: "created", region: "iad" };
+          },
+        }),
+      applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
+      waitHealth: async () => {},
+      containerEnv: () => ({ AGENTTRACE_ENABLED: "true" }),
+    });
+    expect(await wakeFly({ id: "she", agent_group_id: "ag" })).toBe(true);
+    expect(envSeen?.AGENTTRACE_ENABLED).toBe("true");
+  });
+
+  it("calls markStopped from rehydrated tracking on kill", async () => {
+    const dir = path.join(DATA_DIR, "v2-sessions", "ag", "rehyd");
+    mkdirSync(dir, { recursive: true });
+    writeFlyIdentity(dir, {
+      machineId: "mrehyd",
+      volumeId: "v",
+      app: "a",
+      region: "iad",
+      image: "i",
+    });
+    const stop = vi.fn(async () => {});
+    setFlyWakeDeps({
+      createClient: () =>
+        mockClient({
+          getMachine: async () => ({ id: "mrehyd", state: "started" }),
+          stopMachine: stop,
+        }),
+    });
+    await cleanupFlyOrphans();
+    expect(isFlyRunning("rehyd")).toBe(true);
+    await new Promise<void>((resolve) => {
+      killFly("rehyd", "test", resolve);
+    });
+    expect(stop).toHaveBeenCalled();
+    expect(isFlyRunning("rehyd")).toBe(false);
   });
 });

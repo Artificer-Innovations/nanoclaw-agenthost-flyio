@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyFlyOneCli,
   buildCombinedCaBundlePem,
+  gatewayAuthorityFromBase,
   rewriteDockerInternalHostnames,
   type FlyOneCliClient,
 } from "./fly-onecli.js";
@@ -119,5 +120,11 @@ describe("fly-onecli", () => {
     const result = await applyFlyOneCli({ client, gatewayHost: undefined });
     expect(result.ok).toBe(true);
     expect(result.files).toEqual([]);
+  });
+
+  it("gatewayAuthorityFromBase falls back on invalid urls", () => {
+    expect(gatewayAuthorityFromBase("")).toBe("127.0.0.1");
+    expect(gatewayAuthorityFromBase("http://", "fb")).toBe("fb");
+    expect(gatewayAuthorityFromBase("host.only:1234")).toBe("host.only:1234");
   });
 });
