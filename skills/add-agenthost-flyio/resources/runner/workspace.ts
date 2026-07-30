@@ -21,6 +21,8 @@ export interface EnsureFlyWorkspaceOpts {
   copyFile?: typeof fs.copyFileSync;
   readdir?: typeof fs.readdirSync;
   exists?: typeof fs.existsSync;
+  /** Injectable for tests — defaults to schema bootstrap / placeholders. */
+  ensurePeerSqlite?: (root: string) => void;
 }
 
 const require = createRequire(import.meta.url);
@@ -197,7 +199,7 @@ export function ensureFlyWorkspace(opts: EnsureFlyWorkspaceOpts = {}): string {
 
   copyBootstrapAgentFiles(agentDir, bootstrapDir, opts);
   try {
-    ensurePeerSqliteFiles(root);
+    (opts.ensurePeerSqlite ?? ensurePeerSqliteFiles)(root);
   } catch {
     // Stub mkdir in unit tests; real Fly volumes are writable.
   }

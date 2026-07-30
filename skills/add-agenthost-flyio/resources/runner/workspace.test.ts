@@ -135,6 +135,20 @@ describe("runner workspace", () => {
     }
   });
 
+  it("swallows ensurePeerSqlite failures (writable-volume assumption)", () => {
+    dir = mkdtempSync(path.join(tmpdir(), "fly-ws-sqlite-fail-"));
+    expect(() =>
+      ensureFlyWorkspace({
+        workingRoot: dir,
+        groupFolder: "g1",
+        ensurePeerSqlite: () => {
+          throw new Error("simulated sqlite bootstrap failure");
+        },
+      }),
+    ).not.toThrow();
+    expect(existsSync(path.join(dir, "agent"))).toBe(true);
+  });
+
   it("registerFlyRunner bootstraps or skips", () => {
     dir = mkdtempSync(path.join(tmpdir(), "fly-reg-"));
     const logs: string[] = [];

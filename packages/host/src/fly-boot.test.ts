@@ -12,7 +12,7 @@ vi.mock("./fly-runtime.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./fly-runtime.js")>();
   return {
     ...actual,
-    cleanupFlyOrphans: (...args: unknown[]) => cleanupFlyOrphans(...args),
+    cleanupFlyOrphans: () => cleanupFlyOrphans(),
   };
 });
 
