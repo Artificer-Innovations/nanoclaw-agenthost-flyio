@@ -149,6 +149,44 @@ describe("fly-runtime", () => {
     expect(volumeName).toMatch(/^[a-z0-9_]{1,30}$/);
   });
 
+  it("uses distinct machine names when session ids share a long prefix", async () => {
+    const names: string[] = [];
+    const ag = "ag-1b973136-67ab-4cbd-a496-11fbf8cfa0e0";
+    const sessions = [
+      "sess-1785345864447-szsudq",
+      "sess-1785390412871-5tblbr",
+    ] as const;
+    for (const id of sessions) {
+      const dir = path.join(sessionDir, id);
+      mkdirSync(dir, { recursive: true });
+      resetFlyDriverStateForTests();
+      setFlyWakeDeps({
+        resolveSessionDir: () => dir,
+        resolveGroupFolder: () => "folder",
+        createClient: () =>
+          mockClient({
+            createMachine: async (input) => {
+              names.push(input.name);
+              return {
+                id: `mach_${names.length}`,
+                name: input.name,
+                state: "created",
+                region: "iad",
+              };
+            },
+          }),
+        applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
+        waitHealth: async () => {},
+      });
+      expect(await wakeFly({ id, agent_group_id: ag })).toBe(true);
+    }
+    expect(names).toHaveLength(2);
+    expect(names[0]).not.toBe(names[1]);
+    expect(names[0]).toMatch(/^ncl-[a-f0-9]{40}$/);
+    expect(names[1]).toMatch(/^ncl-[a-f0-9]{40}$/);
+    expect(names[0]!.length).toBeLessThanOrEqual(63);
+  });
+
   it("wakes existing identity path", async () => {
     writeFlyIdentity(sessionDir, {
       machineId: "mach_existing",
@@ -220,17 +258,34 @@ describe("fly-runtime", () => {
 
   it("prefers public webchat URL over host.docker.internal for Fly", async () => {
     const { resolveFlyWebchatApiBase } = await import("./fly-runtime.js");
+    const noFile = () => ({});
     expect(
-      resolveFlyWebchatApiBase({
-        WEBCHAT_CONTAINER_API_BASE: "http://host.docker.internal:3201",
-        WEBCHAT_PUBLIC_BASE_URL: "https://chat.example.test",
-      }),
+      resolveFlyWebchatApiBase(
+        {
+          WEBCHAT_CONTAINER_API_BASE: "http://host.docker.internal:3201",
+          WEBCHAT_PUBLIC_BASE_URL: "https://chat.example.test",
+        },
+        noFile,
+      ),
     ).toBe("https://chat.example.test");
     expect(
-      resolveFlyWebchatApiBase({
-        WEBCHAT_CONTAINER_API_BASE: "http://host.docker.internal:3201",
-      }),
+      resolveFlyWebchatApiBase(
+        {
+          WEBCHAT_CONTAINER_API_BASE: "http://host.docker.internal:3201",
+        },
+        noFile,
+      ),
     ).toBeNull();
+    expect(
+      resolveFlyWebchatApiBase(
+        {
+          WEBCHAT_CONTAINER_API_BASE: "http://host.docker.internal:3201",
+        },
+        () => ({
+          WEBCHAT_PUBLIC_BASE_URL: "https://from-dotenv.example.test",
+        }),
+      ),
+    ).toBe("https://from-dotenv.example.test");
   });
 
   it("coalesces concurrent wakes for the same session", async () => {

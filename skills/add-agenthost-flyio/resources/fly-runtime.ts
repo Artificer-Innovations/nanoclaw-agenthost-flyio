@@ -11,6 +11,7 @@ import path from "node:path";
 import type { RuntimeDriver, SessionRef, WakeContext } from "./agenthosts.js";
 import { DATA_DIR, GROUPS_DIR } from "./config.js";
 import { getAgentGroup } from "./db/agent-groups.js";
+import { readEnvFile } from "./env.js";
 import { log } from "./log.js";
 import {
   clearFlyIdentity,
@@ -98,12 +99,17 @@ function resolveGroupFolder(agentGroupId: string): string {
   return group?.folder ?? agentGroupId;
 }
 
+/**
+ * Fly machine names max out at 63 chars. Truncating `ag-…-sess-…` collides
+ * when two session ids share a long common prefix (e.g. same millis epoch).
+ * Hash the full ids like volumes do.
+ */
 function machineNameFor(session: SessionRef): string {
-  const safe = `${session.agent_group_id}-${session.id}`
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, "-")
-    .slice(0, 50);
-  return `ncl-${safe}`.slice(0, 63);
+  const digest = createHash("sha256")
+    .update(`${session.agent_group_id}\0${session.id}`)
+    .digest("hex")
+    .slice(0, 40);
+  return `ncl-${digest}`;
 }
 
 /**
@@ -165,16 +171,27 @@ function collectGroupGuestFiles(
   return files;
 }
 
-/** Prefer a host Fly Machines can reach (public ngrok), not host.docker.internal. */
+/** Keys consulted for a Fly-reachable webchat apiBase (not dumped into process.env). */
+export const FLY_WEBCHAT_API_BASE_KEYS = [
+  "WEBCHAT_FLY_API_BASE",
+  "WEBCHAT_PUBLIC_BASE_URL",
+  "WEBCHAT_CONTAINER_API_BASE",
+] as const;
+
+/**
+ * Prefer a host Fly Machines can reach (public ngrok), not host.docker.internal.
+ *
+ * Reads only the webchat URL keys from `.env` via `readEnvFile` when unset in
+ * `env` — NanoClaw does not dotenv-load, and LaunchAgents often omit these.
+ * Values stay out of process.env so child processes do not inherit them.
+ */
 export function resolveFlyWebchatApiBase(
   env: NodeJS.ProcessEnv = process.env,
+  readFile: (keys: string[]) => Record<string, string> = readEnvFile,
 ): string | null {
-  for (const key of [
-    "WEBCHAT_FLY_API_BASE",
-    "WEBCHAT_PUBLIC_BASE_URL",
-    "WEBCHAT_CONTAINER_API_BASE",
-  ] as const) {
-    const raw = (env[key] ?? "").trim();
+  const fromFile = readFile([...FLY_WEBCHAT_API_BASE_KEYS]);
+  for (const key of FLY_WEBCHAT_API_BASE_KEYS) {
+    const raw = (env[key] ?? fromFile[key] ?? "").trim();
     if (!raw) continue;
     try {
       const url = new URL(raw.includes("://") ? raw : `http://${raw}`);
@@ -232,6 +249,8 @@ function rewriteWebchatMdForFly(
 ## Fly / remote runtime
 
 Claude transcript resume can reset across Machine restarts. When you lack recent chat context, call \`webchat_read_channel\` / \`webchat_read_thread\` (or \`GET /api/agent/tools\` then those tools) with your bearer token to load history — including messages from every member of the room — instead of guessing.
+
+**Attachments work from Fly.** Call \`mcp__nanoclaw__send_file({ to, path })\` with an explicit destination (the inbound \`from=\` name, e.g. \`channel-6\`). NanoClaw stages file bytes to the host over sessionio — you do **not** need a shared filesystem with webchat, and peers who say otherwise are describing a different (external MCP) path. Writing a file without \`send_file\` never attaches anything. If \`send_file\` errors, surface the error; do not conclude attachments are impossible.
 `;
   }
   return next;

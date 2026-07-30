@@ -15,19 +15,21 @@ This is the recommended short path while OneCLI hosted is waitlisted and you are
 │    proxy :10255                                                   │
 │                                                                   │
 │  ngrok HTTP → https://sio-xxx.ngrok-free.app  → :18765 (mailbox)  │
+│  ngrok HTTP → https://chat-xxx.ngrok-free.app → :3201  (webchat)  │
 │  ngrok TCP  → tcp://X.tcp.ngrok.io:PORT       → :10255 (OneCLI)   │
 └───────────────────────────────────────────────────────────────────┘
                               ▲
-                              │ sessionio: HTTPS; OneCLI: CONNECT via TCP
+                              │ sessionio + webchat: HTTPS; OneCLI: CONNECT via TCP
                               │
                     ┌─────────┴──────────┐
                     │  Fly agent Machine │
                     │  SESSIONIO_BASE_URL = sio HTTP tunnel
+                    │  WEBCHAT apiBase    = chat HTTP tunnel (not host.docker.internal)
                     │  HTTPS_PROXY / GATEWAY = OneCLI TCP tunnel
                     └────────────────────┘
 ```
 
-**Do not tunnel `:10254` unless you have a reason.** The host talks to OneCLI management locally. Machines only need the **proxy** (`:10255`) and the **mailbox** (`:18765`).
+**Do not tunnel `:10254` unless you have a reason.** The host talks to OneCLI management locally. Machines need the **proxy** (`:10255`), the **mailbox** (`:18765`), and (for webchat HTTP tools / terminals) **webchat** (`:3201`).
 
 **OneCLI must use a TCP tunnel**, not `ngrok http`. OneCLI is a CONNECT proxy: clients send `Host: api.anthropic.com`. An HTTP tunnel expects the ngrok hostname and returns **421** (`Received a request for different Host than the current tunnel`).
 
@@ -144,6 +146,9 @@ tunnels:
   sessionio:
     proto: http
     addr: 18765
+  webchat:
+    proto: http
+    addr: 3201   # WEBCHAT_PORT — required for Fly agent webchat HTTP / terminals
   onecli-proxy:
     proto: tcp   # required — CONNECT proxy, not reverse HTTP
     addr: 10255
@@ -153,10 +158,11 @@ tunnels:
 ngrok start --all
 ```
 
-### Option B — two terminals
+### Option B — separate terminals
 
 ```bash
 ngrok http 18765 --url=   # or random
+ngrok http 3201 --url=    # webchat (match WEBCHAT_PUBLIC_BASE_URL)
 ngrok tcp 10255           # OneCLI — must be tcp
 ```
 
@@ -164,6 +170,7 @@ Copy the public endpoints, for example:
 
 ```text
 SESSIONIO_PUBLIC=https://sio-abc123.ngrok-free.app
+WEBCHAT_PUBLIC=https://chat-abc123.ngrok-free.app
 ONECLI_PROXY_PUBLIC=tcp://0.tcp.ngrok.io:12345
 # GATEWAY_BASE_URL uses http:// (CONNECT to the TCP listener), not https://
 ```
@@ -193,6 +200,12 @@ Add to the fork `.env` and **restart the NanoClaw host** so wake picks them up:
 FLY_SESSIONIO_BASE_URL=https://sio-abc123.ngrok-free.app
 SESSIONIO_BASE_URL=https://sio-abc123.ngrok-free.app
 
+# Webchat HTTP for Fly agents (terminals, profiles, history tools). Docker agents
+# still use WEBCHAT_CONTAINER_API_BASE=http://host.docker.internal:<port>.
+WEBCHAT_PUBLIC_BASE_URL=https://chat-abc123.ngrok-free.app
+# Optional override if public URL must differ from browser/OIDC origin:
+# WEBCHAT_FLY_API_BASE=https://chat-abc123.ngrok-free.app
+
 # OneCLI CONNECT endpoint (TCP tunnel → :10255). Use http://host:port — not https://
 GATEWAY_BASE_URL=http://0.tcp.ngrok.io:12345
 
@@ -203,6 +216,7 @@ ONECLI_URL=http://127.0.0.1:10254
 Notes:
 
 - `FLY_SESSIONIO_BASE_URL` wins over `SESSIONIO_BASE_URL` for Fly wakes.
+- Fly wake injects `.webchat/credentials.json` with `apiBase` from `WEBCHAT_FLY_API_BASE` → `WEBCHAT_PUBLIC_BASE_URL` → `WEBCHAT_CONTAINER_API_BASE`, skipping Docker-only hosts. Those keys are read from `.env` at wake time (not full dotenv into `process.env`).
 - Do **not** leave agents on `host.docker.internal` — the driver rewrites that using `GATEWAY_BASE_URL`’s host.
 - If OneCLI’s `/v1/container-config` already returns a correct public proxy URL, you still want `GATEWAY_BASE_URL` set so rewrite has a sensible target.
 - **Never** set `GATEWAY_BASE_URL` to an `ngrok http` URL for OneCLI — you will get **421** from ngrok when the agent calls Anthropic/etc.
@@ -289,6 +303,9 @@ If proxy TLS fails, check that OneCLI CA material was applied (`NODE_EXTRA_CA_CE
 | `SESSIONIO_HTTP_TOKEN` | Host (+ injected to Machine) | Shared bearer |
 | `FLY_SESSIONIO_BASE_URL` | Host | Public URL Machines dial for mailbox |
 | `SESSIONIO_BASE_URL` | Host | Fallback / general agent dial URL |
+| `WEBCHAT_PUBLIC_BASE_URL` | Host (`.env`) | Public webchat origin; Fly injects as agent `apiBase` |
+| `WEBCHAT_FLY_API_BASE` | Host (`.env`, optional) | Override webchat `apiBase` for Fly only |
+| `WEBCHAT_CONTAINER_API_BASE` | Host | Docker-reachable webchat URL (`host.docker.internal`) |
 | `ONECLI_URL` | Host | Local management API |
 | `ONECLI_API_KEY` | Host | Management auth (never on Machine) |
 | `GATEWAY_BASE_URL` | Host | Public proxy URL/host for Machine rewrite |
