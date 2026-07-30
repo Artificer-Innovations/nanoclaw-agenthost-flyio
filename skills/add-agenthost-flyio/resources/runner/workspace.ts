@@ -47,6 +47,7 @@ function ensurePeerSqliteFiles(root: string): void {
     return;
   }
 
+  /* v8 ignore start — bun:sqlite path only runs in the Fly agent image */
   // Always ensure schema — volumes persist stub tables from older images.
   {
     const db = new Database(inboundPath);
@@ -140,6 +141,7 @@ function ensurePeerSqliteFiles(root: string): void {
     `);
     db.close();
   }
+  /* v8 ignore stop */
 }
 
 function copyBootstrapAgentFiles(

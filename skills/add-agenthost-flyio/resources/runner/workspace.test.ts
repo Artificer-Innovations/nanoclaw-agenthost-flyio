@@ -37,6 +37,14 @@ describe("runner workspace", () => {
       path.join(boot, "container.json"),
       '{"provider":"claude"}',
     );
+    const nested = path.join(boot, ".webchat");
+    fs.mkdirSync(nested);
+    fs.writeFileSync(path.join(nested, "credentials.json"), '{"ok":true}');
+    // Broken symlink / unreadable entry should be best-effort skipped.
+    fs.symlinkSync(
+      path.join(boot, "missing-target"),
+      path.join(boot, "broken-link"),
+    );
     const root = path.join(dir, "ws");
     ensureFlyWorkspace({
       workingRoot: root,
@@ -46,6 +54,22 @@ describe("runner workspace", () => {
     expect(
       fs.readFileSync(path.join(root, "agent", "container.json"), "utf8"),
     ).toContain("claude");
+    expect(
+      fs.readFileSync(
+        path.join(root, "agent", ".webchat", "credentials.json"),
+        "utf8",
+      ),
+    ).toContain("ok");
+  });
+
+  it("skips missing bootstrap dir", () => {
+    dir = mkdtempSync(path.join(tmpdir(), "fly-ws-noboot-"));
+    ensureFlyWorkspace({
+      workingRoot: dir,
+      groupFolder: "g1",
+      bootstrapDir: path.join(dir, "nope"),
+    });
+    expect(existsSync(path.join(dir, "agent"))).toBe(true);
   });
 
   it("detects remote peer mode", () => {
