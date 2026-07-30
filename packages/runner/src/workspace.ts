@@ -150,16 +150,28 @@ function copyBootstrapAgentFiles(
   const exists = opts.exists ?? fs.existsSync;
   const readdir = opts.readdir ?? fs.readdirSync;
   const copyFile = opts.copyFile ?? fs.copyFileSync;
+  const mkdir = opts.mkdir ?? fs.mkdirSync;
   if (!exists(bootstrapDir)) return;
-  for (const name of readdir(bootstrapDir)) {
-    const src = path.join(bootstrapDir, name);
-    const dest = path.join(agentDir, name);
-    try {
-      copyFile(src, dest);
-    } catch {
-      // best-effort
+
+  const walk = (srcDir: string, destDir: string): void => {
+    for (const name of readdir(srcDir)) {
+      const src = path.join(srcDir, name);
+      const dest = path.join(destDir, name);
+      try {
+        const st = fs.statSync(src);
+        if (st.isDirectory()) {
+          mkdir(dest, { recursive: true });
+          walk(src, dest);
+        } else if (st.isFile()) {
+          mkdir(path.dirname(dest), { recursive: true });
+          copyFile(src, dest);
+        }
+      } catch {
+        // best-effort
+      }
     }
-  }
+  };
+  walk(bootstrapDir, agentDir);
 }
 
 /**

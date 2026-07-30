@@ -123,19 +123,118 @@ function volumeNameFor(session: SessionRef): string {
  * Fly writes guest files before mounting `/workspace`, so paths under
  * `/workspace/...` are hidden; `/etc/nanoclaw/agent/` survives and the
  * runner copies onto the volume at boot.
+ *
+ * Docker bind-mounts the whole group folder (WEBCHAT.md, .webchat/, …).
+ * Fly must inject the small discovery/auth files the agent needs for
+ * webchat HTTP history + tools — otherwise it has no WEBCHAT.md and an
+ * unreachable host.docker.internal apiBase.
  */
-function collectGroupGuestFiles(groupFolder: string): FlyGuestFile[] {
+function collectGroupGuestFiles(
+  groupFolder: string,
+  env: NodeJS.ProcessEnv = process.env,
+): FlyGuestFile[] {
   const files: FlyGuestFile[] = [];
   const groupDir = path.join(GROUPS_DIR, groupFolder);
-  for (const name of ["container.json", "CLAUDE.md"] as const) {
+  const textNames = [
+    "container.json",
+    "CLAUDE.md",
+    "WEBCHAT.md",
+    "AGENTS.md",
+    "webchat-profile.json",
+  ] as const;
+  for (const name of textNames) {
     const hostPath = path.join(groupDir, name);
     if (!fs.existsSync(hostPath)) continue;
+    let rawValue = fs.readFileSync(hostPath, "utf8");
+    if (name === "WEBCHAT.md") {
+      rawValue = rewriteWebchatMdForFly(rawValue, env);
+    }
     files.push({
       guestPath: `/etc/nanoclaw/agent/${name}`,
-      rawValue: fs.readFileSync(hostPath, "utf8"),
+      rawValue,
+    });
+  }
+
+  const credPath = path.join(groupDir, ".webchat", "credentials.json");
+  if (fs.existsSync(credPath)) {
+    files.push({
+      guestPath: "/etc/nanoclaw/agent/.webchat/credentials.json",
+      rawValue: buildFlyWebchatCredentialsJson(credPath, env),
     });
   }
   return files;
+}
+
+/** Prefer a host Fly Machines can reach (public ngrok), not host.docker.internal. */
+export function resolveFlyWebchatApiBase(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  for (const key of [
+    "WEBCHAT_FLY_API_BASE",
+    "WEBCHAT_PUBLIC_BASE_URL",
+    "WEBCHAT_CONTAINER_API_BASE",
+  ] as const) {
+    const raw = (env[key] ?? "").trim();
+    if (!raw) continue;
+    try {
+      const url = new URL(raw.includes("://") ? raw : `http://${raw}`);
+      // Docker-only hostnames are unreachable from Fly.
+      if (
+        url.hostname === "host.docker.internal" ||
+        url.hostname === "localhost" ||
+        url.hostname === "127.0.0.1"
+      ) {
+        continue;
+      }
+      return `${url.protocol}//${url.host}`.replace(/\/$/, "");
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function buildFlyWebchatCredentialsJson(
+  hostCredPath: string,
+  env: NodeJS.ProcessEnv,
+): string {
+  let parsed: Record<string, unknown> = {};
+  try {
+    parsed = JSON.parse(fs.readFileSync(hostCredPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+  } catch {
+    parsed = {};
+  }
+  const apiBase = resolveFlyWebchatApiBase(env);
+  if (apiBase) parsed.apiBase = apiBase;
+  return `${JSON.stringify(parsed, null, 2)}\n`;
+}
+
+function rewriteWebchatMdForFly(
+  body: string,
+  env: NodeJS.ProcessEnv,
+): string {
+  const apiBase = resolveFlyWebchatApiBase(env);
+  let next = body;
+  if (apiBase) {
+    next = next
+      .replace(
+        /Configured apiBase:\s*`[^`]+`/g,
+        `Configured apiBase: \`${apiBase}\``,
+      )
+      .replace(/http:\/\/host\.docker\.internal:\d+/g, apiBase);
+  }
+  if (!next.includes("## Fly / remote runtime")) {
+    next += `
+
+## Fly / remote runtime
+
+Claude transcript resume can reset across Machine restarts. When you lack recent chat context, call \`webchat_read_channel\` / \`webchat_read_thread\` (or \`GET /api/agent/tools\` then those tools) with your bearer token to load history — including messages from every member of the room — instead of guessing.
+`;
+  }
+  return next;
 }
 
 function toMachineFiles(files: FlyGuestFile[]): Array<{
@@ -251,7 +350,7 @@ async function ensureIdentityAndStart(
   };
   const guestFiles = [
     ...onecli.files,
-    ...collectGroupGuestFiles(groupFolder),
+    ...collectGroupGuestFiles(groupFolder, env),
   ];
   const guest = {
     cpus: 1,

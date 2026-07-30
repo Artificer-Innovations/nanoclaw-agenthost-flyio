@@ -218,6 +218,21 @@ describe("fly-runtime", () => {
     expect(start).not.toHaveBeenCalled();
   });
 
+  it("prefers public webchat URL over host.docker.internal for Fly", async () => {
+    const { resolveFlyWebchatApiBase } = await import("./fly-runtime.js");
+    expect(
+      resolveFlyWebchatApiBase({
+        WEBCHAT_CONTAINER_API_BASE: "http://host.docker.internal:3201",
+        WEBCHAT_PUBLIC_BASE_URL: "https://chat.example.test",
+      }),
+    ).toBe("https://chat.example.test");
+    expect(
+      resolveFlyWebchatApiBase({
+        WEBCHAT_CONTAINER_API_BASE: "http://host.docker.internal:3201",
+      }),
+    ).toBeNull();
+  });
+
   it("coalesces concurrent wakes for the same session", async () => {
     writeFlyIdentity(sessionDir, {
       machineId: "mach_race",
