@@ -31,6 +31,7 @@ function ensurePeerSqliteFiles(root: string): void {
 
   type SqliteDb = {
     exec: (sql: string) => void;
+    prepare: (sql: string) => { all: () => unknown[] };
     close: () => void;
   };
   type SqliteDatabaseCtor = new (filename: string) => SqliteDb;
