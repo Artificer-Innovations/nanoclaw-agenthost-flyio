@@ -12,6 +12,16 @@ import {
 import { syncSkillToFork } from "./patch.js";
 import { findNanoclawRoot } from "./paths.js";
 
+const USAGE = `Usage: nanoclaw-agenthost-flyio <command> [--path <nanoclaw-root>]
+
+Commands:
+  install      Require agenthosts + sessionio, copy driver/runner files, patch boot
+  upgrade      Re-copy + re-patch (idempotent install)
+  sync-skill   Copy bundled skill to .claude/skills/add-agenthost-flyio/
+  verify       Check peers, files, and markers
+  uninstall    Remove files and boot block
+`;
+
 function parseArgs(argv: string[]): { command: string; path?: string } {
   const args = argv.slice(2);
   const command = args[0] ?? "help";
@@ -71,17 +81,14 @@ export function runCommand(argv: string[]): number {
         );
         return 0;
       }
+      case "help":
+      case "--help":
+      case "-h":
+        console.log(USAGE);
+        return 0;
       default:
-        console.log(`Usage: nanoclaw-agenthost-flyio <command> [--path <nanoclaw-root>]
-
-Commands:
-  install      Require agenthosts + sessionio, copy driver/runner files, patch boot
-  upgrade      Re-copy + re-patch (idempotent install)
-  sync-skill   Copy bundled skill to .claude/skills/add-agenthost-flyio/
-  verify       Check peers, files, and markers
-  uninstall    Remove files and boot block
-`);
-        return command === "help" ? 0 : 1;
+        console.log(USAGE);
+        return 1;
     }
   } catch (err) {
     console.error(err instanceof Error ? err.message : err);

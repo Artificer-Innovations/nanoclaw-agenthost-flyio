@@ -63,6 +63,8 @@ describe("bin", () => {
 
   it("runCommand help returns 0", () => {
     expect(runCommand(["node", "bin.js", "help"])).toBe(0);
+    expect(runCommand(["node", "bin.js", "--help"])).toBe(0);
+    expect(runCommand(["node", "bin.js", "-h"])).toBe(0);
   });
 
   it("runCommand unknown returns 1", () => {

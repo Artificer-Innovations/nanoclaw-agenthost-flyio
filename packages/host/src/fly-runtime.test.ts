@@ -594,7 +594,7 @@ describe("fly-runtime", () => {
     expect(await wakeFly({ id: "s13", agent_group_id: "ag" }, {})).toBe(true);
   });
 
-  it("defaults transport to http when unset", async () => {
+  it("fails closed when transport is unset", async () => {
     delete process.env.SESSIONIO_TRANSPORT;
     process.env.FLY_REGION = "   ";
     setFlyWakeDeps({
@@ -603,7 +603,7 @@ describe("fly-runtime", () => {
       applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
       waitHealth: async () => {},
     });
-    expect(await wakeFly({ id: "s14", agent_group_id: "ag" })).toBe(true);
+    expect(await wakeFly({ id: "s14", agent_group_id: "ag" })).toBe(false);
   });
 
   it("uses default createClient from env", async () => {

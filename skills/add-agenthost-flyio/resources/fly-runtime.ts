@@ -559,9 +559,15 @@ async function doWakeFly(
 
   try {
     const transportHint =
-      (typeof ctx.transportName === "string" && ctx.transportName) ||
-      (env.SESSIONIO_TRANSPORT ?? "").trim() ||
-      "http";
+      (typeof ctx.transportName === "string" && ctx.transportName.trim()) ||
+      (env.SESSIONIO_TRANSPORT ?? "").trim();
+    // Fail closed: never assume http. Misconfigured hosts must not wake Fly
+    // against a filesystem mailbox (or an unset transport).
+    if (!transportHint) {
+      throw new Error(
+        "fly runtime requires SESSIONIO_TRANSPORT=http (or ctx.transportName)",
+      );
+    }
     assertHttpTransportForFly(transportHint);
 
     const identity = await ensureIdentityAndStart(

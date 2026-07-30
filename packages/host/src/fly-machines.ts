@@ -77,11 +77,25 @@ export class FlyMachinesClient {
   }
 
   async createVolume(input: CreateVolumeInput): Promise<FlyVolume> {
-    return this.request<FlyVolume>("POST", `/apps/${this.app}/volumes`, {
-      name: input.name,
-      region: input.region,
-      size_gb: input.sizeGb,
-    });
+    const existing = await this.findVolumeByName(input.name);
+    if (existing) return existing;
+    try {
+      return await this.request<FlyVolume>(
+        "POST",
+        `/apps/${this.app}/volumes`,
+        {
+          name: input.name,
+          region: input.region,
+          size_gb: input.sizeGb,
+        },
+        { retryNetwork: false },
+      );
+    } catch (error) {
+      // Name collision or ambiguous network after server-side success — reuse.
+      const again = await this.findVolumeByName(input.name);
+      if (again) return again;
+      throw error;
+    }
   }
 
   async getVolume(volumeId: string): Promise<FlyVolume> {
@@ -91,35 +105,74 @@ export class FlyMachinesClient {
     );
   }
 
+  async listVolumes(): Promise<FlyVolume[]> {
+    const rows = await this.request<FlyVolume[]>(
+      "GET",
+      `/apps/${this.app}/volumes`,
+    );
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  async findVolumeByName(name: string): Promise<FlyVolume | undefined> {
+    const volumes = await this.listVolumes();
+    return volumes.find((v) => v.name === name);
+  }
+
   async createMachine(input: CreateMachineInput): Promise<FlyMachine> {
+    const existing = await this.findMachineByName(input.name);
+    if (existing) return existing;
     const files = (input.files ?? []).map((f) => ({
       guest_path: f.guestPath,
       raw_value: Buffer.from(f.rawValue, "utf8").toString("base64"),
     }));
-    return this.request<FlyMachine>("POST", `/apps/${this.app}/machines`, {
-      name: input.name,
-      region: input.region,
-      config: {
-        image: input.image,
-        env: input.env,
-        auto_destroy: false,
-        restart: { policy: "no" },
-        guest: {
-          cpus: input.cpus ?? 1,
-          cpu_kind: "shared",
-          memory_mb: input.memoryMb ?? 1024,
-        },
-        mounts: [
-          {
-            volume: input.volumeId,
-            path: input.volumeMountPath ?? "/workspace",
+    try {
+      return await this.request<FlyMachine>(
+        "POST",
+        `/apps/${this.app}/machines`,
+        {
+          name: input.name,
+          region: input.region,
+          config: {
+            image: input.image,
+            env: input.env,
+            auto_destroy: false,
+            restart: { policy: "no" },
+            guest: {
+              cpus: input.cpus ?? 1,
+              cpu_kind: "shared",
+              memory_mb: input.memoryMb ?? 1024,
+            },
+            mounts: [
+              {
+                volume: input.volumeId,
+                path: input.volumeMountPath ?? "/workspace",
+              },
+            ],
+            files,
+            // NanoClaw owns start/stop — disable Fly autostop.
+            services: [],
           },
-        ],
-        files,
-        // NanoClaw owns start/stop — disable Fly autostop.
-        services: [],
-      },
-    });
+        },
+        { retryNetwork: false },
+      );
+    } catch (error) {
+      const again = await this.findMachineByName(input.name);
+      if (again) return again;
+      throw error;
+    }
+  }
+
+  async listMachines(): Promise<FlyMachine[]> {
+    const rows = await this.request<FlyMachine[]>(
+      "GET",
+      `/apps/${this.app}/machines`,
+    );
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  async findMachineByName(name: string): Promise<FlyMachine | undefined> {
+    const machines = await this.listMachines();
+    return machines.find((m) => m.name === name);
   }
 
   async getMachine(machineId: string): Promise<FlyMachine> {
@@ -171,7 +224,10 @@ export class FlyMachinesClient {
     method: string,
     path: string,
     body?: unknown,
+    opts: { retryNetwork?: boolean; timeoutMs?: number } = {},
   ): Promise<T> {
+    const retryNetwork = opts.retryNetwork ?? true;
+    const timeoutMs = opts.timeoutMs ?? 30_000;
     let attempt = 0;
     let lastError: unknown;
     while (attempt <= this.maxRetries) {
@@ -184,6 +240,7 @@ export class FlyMachinesClient {
             Accept: "application/json",
           },
           body: body === undefined ? undefined : JSON.stringify(body),
+          signal: AbortSignal.timeout(timeoutMs),
         });
         if (response.status === 429 && attempt < this.maxRetries) {
           const retryAfter = Number(response.headers.get("retry-after") ?? "1");
@@ -206,9 +263,14 @@ export class FlyMachinesClient {
         const isNetwork =
           error instanceof TypeError ||
           (error instanceof Error &&
-            /fetch|network|ECONN/i.test(error.message));
-        if (!isNetwork || attempt >= this.maxRetries) throw error;
-        await this.sleep(250 * 2 ** attempt);
+            /fetch|network|ECONN|TimeoutError|aborted|AbortError/i.test(
+              error.message,
+            ));
+        if (!isNetwork || !retryNetwork || attempt >= this.maxRetries) {
+          throw error;
+        }
+        // Jitter so concurrent wakes don't retry Fly in lockstep.
+        await this.sleep(250 * 2 ** attempt * (0.5 + Math.random()));
         attempt += 1;
       }
     }

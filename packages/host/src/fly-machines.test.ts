@@ -24,6 +24,18 @@ describe("FlyMachinesClient", () => {
         method: init?.method ?? "GET",
         body: typeof init?.body === "string" ? init.body : undefined,
       });
+      if (
+        url.endsWith("/volumes") &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return jsonResponse([]);
+      }
+      if (
+        url.endsWith("/machines") &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return jsonResponse([]);
+      }
       if (url.includes("/volumes") && init?.method === "POST") {
         return jsonResponse({
           id: "vol_1",
@@ -60,6 +72,157 @@ describe("FlyMachinesClient", () => {
     });
     expect(machine.id).toBe("mach_1");
     expect(calls.some((c) => c.body?.includes("raw_value"))).toBe(true);
+    expect(
+      calls.some((c) => c.method === "GET" && c.url.endsWith("/volumes")),
+    ).toBe(true);
+  });
+
+  it("reuses volume/machine by deterministic name", async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (
+        url.endsWith("/volumes") &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return jsonResponse([
+          { id: "vol_existing", name: "vol", region: "iad", size_gb: 3 },
+        ]);
+      }
+      if (
+        url.endsWith("/machines") &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return jsonResponse([
+          { id: "mach_existing", name: "m", state: "stopped" },
+        ]);
+      }
+      throw new Error(`unexpected ${init?.method} ${url}`);
+    });
+    const client = new FlyMachinesClient({
+      token: "t",
+      app: "agents",
+      fetchImpl,
+      sleep: async () => {},
+    });
+    expect(
+      (
+        await client.createVolume({
+          name: "vol",
+          region: "iad",
+          sizeGb: 3,
+        })
+      ).id,
+    ).toBe("vol_existing");
+    expect(
+      (
+        await client.createMachine({
+          name: "m",
+          region: "iad",
+          image: "img",
+          env: {},
+          volumeId: "vol_existing",
+        })
+      ).id,
+    ).toBe("mach_existing");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry create on network errors; looks up by name instead", async () => {
+    let postAttempts = 0;
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (
+        url.endsWith("/machines") &&
+        (!init?.method || init.method === "GET")
+      ) {
+        if (postAttempts === 0) return jsonResponse([]);
+        return jsonResponse([
+          { id: "mach_recovered", name: "m", state: "created" },
+        ]);
+      }
+      if (url.includes("/machines") && init?.method === "POST") {
+        postAttempts += 1;
+        throw new TypeError("fetch failed");
+      }
+      return jsonResponse([]);
+    });
+    const client = new FlyMachinesClient({
+      token: "t",
+      app: "agents",
+      fetchImpl,
+      sleep: async () => {},
+      maxRetries: 3,
+    });
+    const machine = await client.createMachine({
+      name: "m",
+      region: "iad",
+      image: "img",
+      env: {},
+      volumeId: "v",
+    });
+    expect(machine.id).toBe("mach_recovered");
+    expect(postAttempts).toBe(1);
+  });
+
+  it("passes AbortSignal.timeout on fetch", async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.signal).toBeDefined();
+      expect(init?.signal?.aborted).toBe(false);
+      return jsonResponse({ id: "mach_sig" });
+    });
+    const client = new FlyMachinesClient({
+      token: "t",
+      app: "a",
+      fetchImpl,
+      sleep: async () => {},
+      maxRetries: 0,
+    });
+    await client.getMachine("mach_sig");
+    expect(fetchImpl).toHaveBeenCalled();
+  });
+
+  it("rethrows create errors when name lookup finds nothing", async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (
+        (url.endsWith("/volumes") || url.endsWith("/machines")) &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return jsonResponse([]);
+      }
+      if (init?.method === "POST") {
+        return new Response("boom", { status: 500 });
+      }
+      return jsonResponse({});
+    });
+    const client = new FlyMachinesClient({
+      token: "t",
+      app: "agents",
+      fetchImpl,
+      sleep: async () => {},
+      maxRetries: 0,
+    });
+    await expect(
+      client.createVolume({ name: "vol", region: "iad", sizeGb: 3 }),
+    ).rejects.toThrow(/500/);
+    await expect(
+      client.createMachine({
+        name: "m",
+        region: "iad",
+        image: "img",
+        env: {},
+        volumeId: "v",
+      }),
+    ).rejects.toThrow(/500/);
+  });
+
+  it("treats non-array list payloads as empty", async () => {
+    const client = new FlyMachinesClient({
+      token: "t",
+      app: "a",
+      fetchImpl: async () => jsonResponse({ not: "an-array" }),
+      sleep: async () => {},
+      maxRetries: 0,
+    });
+    expect(await client.listVolumes()).toEqual([]);
+    expect(await client.listMachines()).toEqual([]);
   });
 
   it("retries on 429 then succeeds", async () => {
@@ -177,9 +340,15 @@ describe("FlyMachinesClient", () => {
   });
 
   it("createMachine without files uses empty list", async () => {
-    const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) =>
-      jsonResponse({ id: "mach_nf", state: "created" }),
-    );
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (
+        url.endsWith("/machines") &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return jsonResponse([]);
+      }
+      return jsonResponse({ id: "mach_nf", state: "created" });
+    });
     const client = new FlyMachinesClient({
       token: "t",
       app: "a",
@@ -193,8 +362,8 @@ describe("FlyMachinesClient", () => {
       env: {},
       volumeId: "v",
     });
-    const init = fetchImpl.mock.calls[0]?.[1];
-    const body = JSON.parse((init?.body as string) ?? "{}");
+    const postCall = fetchImpl.mock.calls.find((c) => c[1]?.method === "POST");
+    const body = JSON.parse((postCall?.[1]?.body as string) ?? "{}");
     expect(body.config.files).toEqual([]);
   });
 
