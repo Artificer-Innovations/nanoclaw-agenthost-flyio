@@ -69,6 +69,14 @@ describe("install", () => {
     const removed = runUninstall(root);
     expect(removed.removed.length).toBeGreaterThan(0);
     expect(existsSync(path.join(root, "src/fly-boot.ts"))).toBe(false);
+    const runnerIndex = readFileSync(
+      path.join(root, "container/agent-runner/src/index.ts"),
+      "utf8",
+    );
+    expect(runnerIndex).not.toContain("registerFlyRunner");
+    expect(runnerIndex).not.toContain(
+      "@nanoclaw-agenthost-flyio:runner-register",
+    );
   });
 
   it("verify reports missing peers and files", () => {

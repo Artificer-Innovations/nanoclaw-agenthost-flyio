@@ -74,6 +74,63 @@ export function removeFlyBootBlockContent(content: string): string {
   return content.replace(pattern, "\n");
 }
 
+const RUNNER_REGISTER_BEGIN = `// ${FLY_MARKER}:runner-register:begin`;
+const RUNNER_REGISTER_END = `// ${FLY_MARKER}:runner-register:end`;
+
+/** Marked runner boot that remounts /workspace from the Fly volume. */
+export const FLY_RUNNER_REGISTER_BODY = `import { registerFlyRunner } from './fly/register.js';
+registerFlyRunner(process.env, {
+  info: (msg) => console.error(\`[agent-runner] \${msg}\`),
+  warn: (msg) => console.error(\`[agent-runner] \${msg}\`),
+});`;
+
+export function hasFlyRunnerRegister(content: string): boolean {
+  return (
+    content.includes(RUNNER_REGISTER_BEGIN) &&
+    content.includes("registerFlyRunner")
+  );
+}
+
+/**
+ * Strip unmarked registerFlyRunner boot blocks (manual hotfixes / pre-marker
+ * installs) so uninstall cannot leave a dangling import after fly/ is removed.
+ */
+export function scavengeUnmarkedFlyRunnerRegister(content: string): string {
+  if (content.includes(RUNNER_REGISTER_BEGIN)) return content;
+  if (!content.includes("registerFlyRunner")) return content;
+  const pattern =
+    /import \{ registerFlyRunner \} from ['"]\.\/fly\/register\.js['"];\r?\nregisterFlyRunner\([\s\S]*?\);\r?\n?/;
+  const next = content.replace(pattern, "");
+  if (next === content) {
+    throw new Error(
+      "Could not scavenge unmarked registerFlyRunner (present but pattern mismatch)",
+    );
+  }
+  return next;
+}
+
+export function insertFlyRunnerRegister(content: string): string {
+  if (hasFlyRunnerRegister(content)) return content;
+  let next = scavengeUnmarkedFlyRunnerRegister(content);
+  if (hasFlyRunnerRegister(next)) return next;
+  const block = `${RUNNER_REGISTER_BEGIN}\n${FLY_RUNNER_REGISTER_BODY}\n${RUNNER_REGISTER_END}\n`;
+  const firstImport = next.search(/^import /m);
+  if (firstImport >= 0) {
+    return next.slice(0, firstImport) + block + next.slice(firstImport);
+  }
+  return block + next;
+}
+
+export function removeFlyRunnerRegister(content: string): string {
+  const marked = new RegExp(
+    `^[ \\t]*${RUNNER_REGISTER_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\r?\\n[\\s\\S]*?^[ \\t]*${RUNNER_REGISTER_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\r?\\n?`,
+    "m",
+  );
+  let next = content.replace(marked, "");
+  next = scavengeUnmarkedFlyRunnerRegister(next);
+  return next;
+}
+
 export interface FileTransform {
   path: string;
   transform: (source: string) => string;
@@ -87,6 +144,12 @@ export const FILE_TRANSFORMS: FileTransform[] = [
     transform: insertFlyBootBlockContent,
     uninstall: removeFlyBootBlockContent,
     verify: hasFlyBootBlock,
+  },
+  {
+    path: "container/agent-runner/src/index.ts",
+    transform: insertFlyRunnerRegister,
+    uninstall: removeFlyRunnerRegister,
+    verify: hasFlyRunnerRegister,
   },
 ];
 
