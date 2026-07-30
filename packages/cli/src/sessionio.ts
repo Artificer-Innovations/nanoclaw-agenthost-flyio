@@ -13,11 +13,18 @@ interface Requirement {
   tokens: string[];
 }
 
+/** Where sessionio may define `SESSIONIO_API_VERSION = 1` (inline or split types file). */
+const VERSION_CANDIDATES = [
+  "src/sessionio.ts",
+  "src/sessionio-types.ts",
+  "src/sessionio/types.ts",
+];
+
 const REQUIREMENTS: Requirement[] = [
   {
     path: "src/sessionio.ts",
     tokens: [
-      `SESSIONIO_API_VERSION = ${EXPECTED_SESSIONIO_API_VERSION}`,
+      "SESSIONIO_API_VERSION",
       "registerSessionTransport",
       "resolveSessionTransport",
     ],
@@ -27,6 +34,16 @@ const REQUIREMENTS: Requirement[] = [
     tokens: ["@nanoclaw-sessionio:index-boot:begin"],
   },
 ];
+
+function hasSessionioApiVersion(nanoclawRoot: string): boolean {
+  const token = `SESSIONIO_API_VERSION = ${EXPECTED_SESSIONIO_API_VERSION}`;
+  for (const rel of VERSION_CANDIDATES) {
+    const filePath = path.join(nanoclawRoot, rel);
+    if (!fs.existsSync(filePath)) continue;
+    if (fs.readFileSync(filePath, "utf8").includes(token)) return true;
+  }
+  return false;
+}
 
 export function findSessionioIssues(nanoclawRoot: string): string[] {
   const issues: string[] = [];
@@ -44,6 +61,11 @@ export function findSessionioIssues(nanoclawRoot: string): string[] {
         );
       }
     }
+  }
+  if (!hasSessionioApiVersion(nanoclawRoot)) {
+    issues.push(
+      `src/sessionio.ts missing sessionio API v${EXPECTED_SESSIONIO_API_VERSION} capability SESSIONIO_API_VERSION = ${EXPECTED_SESSIONIO_API_VERSION}`,
+    );
   }
   return issues;
 }

@@ -13,8 +13,29 @@ describe("fly-onecli", () => {
       OTHER: "ok",
     };
     rewriteDockerInternalHostnames(env, "proxy.internal");
-    expect(env.HTTPS_PROXY).toBe("http://proxy.internal:10255");
+    expect(env.HTTPS_PROXY).toBe("http://proxy.internal");
     expect(env.OTHER).toBe("ok");
+  });
+
+  it("rewrites docker proxy port using GATEWAY_BASE_URL authority", () => {
+    const env = {
+      HTTPS_PROXY: "http://x:tok@host.docker.internal:10255",
+    };
+    rewriteDockerInternalHostnames(
+      env,
+      "https://bhg-onecli-proxy.ngrok-free.dev",
+    );
+    expect(env.HTTPS_PROXY).toBe(
+      "https://x:tok@bhg-onecli-proxy.ngrok-free.dev",
+    );
+  });
+
+  it("leaves http proxy scheme when gateway is http", () => {
+    const env = {
+      HTTPS_PROXY: "http://x:tok@host.docker.internal:10255",
+    };
+    rewriteDockerInternalHostnames(env, "http://onecli.internal:10255");
+    expect(env.HTTPS_PROXY).toBe("http://x:tok@onecli.internal:10255");
   });
 
   it("builds combined CA pem", () => {

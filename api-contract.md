@@ -20,7 +20,8 @@ Installer inserts `@nanoclaw-agenthost-flyio:boot` in `src/index.ts` calling `st
 
 ### sessionio
 
-- `src/sessionio.ts`: `SESSIONIO_API_VERSION = 1`, `registerSessionTransport`, `resolveSessionTransport`
+- `src/sessionio.ts`: exports `SESSIONIO_API_VERSION`, `registerSessionTransport`, `resolveSessionTransport`
+- Version pin: `SESSIONIO_API_VERSION = 1` in `src/sessionio.ts` **or** `src/sessionio-types.ts` (real sessionio layout)
 - `src/index.ts`: `@nanoclaw-sessionio:index-boot:begin`
 
 ## Host opt-in

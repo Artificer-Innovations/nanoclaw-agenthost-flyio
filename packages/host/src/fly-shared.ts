@@ -22,6 +22,8 @@ export const FLY_HOST_ENV_KEYS = [
   "FLY_MACHINES_API_BASE",
   "FLY_VOLUME_SIZE_GB",
   "FLY_SESSIONIO_BASE_URL",
+  "GATEWAY_BASE_URL",
+  "ONECLI_GATEWAY_HOST",
 ] as const;
 
 export type FlyHostEnvKey = (typeof FLY_HOST_ENV_KEYS)[number];

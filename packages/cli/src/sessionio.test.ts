@@ -41,4 +41,25 @@ describe("requireSessionio", () => {
     expect(findSessionioIssues(root).length).toBeGreaterThan(0);
     expect(() => requireSessionio(root)).toThrow(/nanoclaw-sessionio API v1/);
   });
+
+  it("passes when API version lives in sessionio-types.ts (real sessionio layout)", () => {
+    root = mkdtempSync(path.join(tmpdir(), "sio-split-"));
+    writeFixture(
+      root,
+      "src/sessionio-types.ts",
+      `export const SESSIONIO_API_VERSION = ${EXPECTED_SESSIONIO_API_VERSION} as const;\n`,
+    );
+    writeFixture(
+      root,
+      "src/sessionio.ts",
+      `export { SESSIONIO_API_VERSION } from './sessionio-types.js';\nexport function registerSessionTransport() {}\nexport function resolveSessionTransport() {}\n`,
+    );
+    writeFixture(
+      root,
+      "src/index.ts",
+      `// @nanoclaw-sessionio:index-boot:begin\n// @nanoclaw-sessionio:index-boot:end\n`,
+    );
+    expect(findSessionioIssues(root)).toEqual([]);
+    expect(() => requireSessionio(root)).not.toThrow();
+  });
 });

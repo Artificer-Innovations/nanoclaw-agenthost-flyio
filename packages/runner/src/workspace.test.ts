@@ -24,7 +24,25 @@ describe("runner workspace", () => {
     expect(root).toBe(dir);
     expect(existsSync(path.join(dir, "agent"))).toBe(true);
     expect(existsSync(path.join(dir, "groups", "g1"))).toBe(true);
+    expect(existsSync(path.join(dir, "inbound.db"))).toBe(true);
+    expect(existsSync(path.join(dir, "outbound.db"))).toBe(true);
     expect(DEFAULT_WORKING_ROOT).toBe("/workspace");
+  });
+
+  it("copies bootstrap agent files onto the volume", () => {
+    dir = mkdtempSync(path.join(tmpdir(), "fly-ws-boot-"));
+    const boot = path.join(dir, "boot");
+    fs.mkdirSync(boot);
+    fs.writeFileSync(path.join(boot, "container.json"), '{"provider":"claude"}');
+    const root = path.join(dir, "ws");
+    ensureFlyWorkspace({
+      workingRoot: root,
+      groupFolder: "g1",
+      bootstrapDir: boot,
+    });
+    expect(fs.readFileSync(path.join(root, "agent", "container.json"), "utf8")).toContain(
+      "claude",
+    );
   });
 
   it("detects remote peer mode", () => {

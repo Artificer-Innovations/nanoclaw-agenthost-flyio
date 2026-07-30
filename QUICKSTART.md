@@ -44,3 +44,7 @@ Restart host → send a message → confirm Machine start/stop.
 - [ ] Message round-trip with Machine stopped before wake
 - [ ] Idle stop retains volume
 - [ ] OneCLI path works; no raw provider keys in Machine inspect
+
+## Local laptop + ngrok
+
+For host and OneCLI on your dev machine with Fly Machines dialing through tunnels, see [docs/local-dev-fly-ngrok.md](./docs/local-dev-fly-ngrok.md).

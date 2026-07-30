@@ -22,7 +22,7 @@ pnpm exec nanoclaw-agenthost-flyio install
 pnpm exec nanoclaw-agenthost-flyio verify
 ```
 
-See [QUICKSTART.md](./QUICKSTART.md) and the skill `.claude/skills/add-agenthost-flyio/`.
+See [QUICKSTART.md](./QUICKSTART.md), [docs/local-dev-fly-ngrok.md](./docs/local-dev-fly-ngrok.md) (laptop host + OneCLI + ngrok), and the skill `.claude/skills/add-agenthost-flyio/`.
 
 ## Peers
 

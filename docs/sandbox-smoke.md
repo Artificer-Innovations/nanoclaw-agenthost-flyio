@@ -9,8 +9,12 @@ pnpm exec nanoclaw-agenthost-flyio install
 pnpm exec nanoclaw-agenthost-flyio verify
 ```
 
-Without real Fly credentials, unit/integration tests mock the Machines API. For a live smoke:
+Without real Fly credentials, unit/integration tests mock the Machines API.
 
-1. Set `FLY_*` + `FLY_SESSIONIO_BASE_URL`
+For a live smoke with **host + OneCLI on your laptop** (ngrok to sessionio + OneCLI proxy), see [local-dev-fly-ngrok.md](./local-dev-fly-ngrok.md).
+
+Minimal live outline:
+
+1. Set `FLY_*` + `FLY_SESSIONIO_BASE_URL` (+ `GATEWAY_BASE_URL` for OneCLI proxy)
 2. Opt one group to `--runtime fly --session-transport http`
 3. Send a channel message and watch `fly machines list`

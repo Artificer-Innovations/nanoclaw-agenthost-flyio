@@ -4,11 +4,12 @@
  * Requires sessionio HTTP transport. Persists machine/volume identity in
  * `.fly-machine.json` under the session directory.
  */
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
 import type { RuntimeDriver, SessionRef, WakeContext } from "./agenthosts.js";
-import { DATA_DIR } from "./config.js";
+import { DATA_DIR, GROUPS_DIR } from "./config.js";
 import { getAgentGroup } from "./db/agent-groups.js";
 import { log } from "./log.js";
 import {
@@ -21,7 +22,7 @@ import {
   createFlyMachinesClientFromEnv,
   type FlyMachinesClient,
 } from "./fly-machines.js";
-import { applyFlyOneCli } from "./fly-onecli.js";
+import { applyFlyOneCli, type FlyGuestFile } from "./fly-onecli.js";
 import {
   FLY_REQUIRED_TRANSPORT,
   FLY_RUNTIME_DIRNAME,
@@ -52,6 +53,8 @@ export interface FlyWakeDeps {
   waitHealth?: typeof waitForSessionioHealth;
   resolveSessionDir?: (session: SessionRef) => string;
   resolveGroupFolder?: (agentGroupId: string) => string;
+  /** Hosthook container env (agenttrace, etc.). Defaults to runContainerEnvContributors when available. */
+  containerEnv?: (occupiedKeys: string[]) => Record<string, string>;
 }
 
 interface TrackedMachine {
@@ -63,6 +66,8 @@ interface TrackedMachine {
 
 const activeMachines = new Map<string, TrackedMachine>();
 const wakeFailures = new Map<string, number>();
+/** Coalesce concurrent wakeFly calls for the same session. */
+const wakeInflight = new Map<string, Promise<boolean>>();
 let wakeDeps: FlyWakeDeps = {};
 
 export function setFlyWakeDeps(deps: FlyWakeDeps): void {
@@ -72,6 +77,7 @@ export function setFlyWakeDeps(deps: FlyWakeDeps): void {
 export function resetFlyDriverStateForTests(): void {
   activeMachines.clear();
   wakeFailures.clear();
+  wakeInflight.clear();
   wakeDeps = {};
 }
 
@@ -100,8 +106,46 @@ function machineNameFor(session: SessionRef): string {
   return `ncl-${safe}`.slice(0, 63);
 }
 
+/**
+ * Fly volume names allow only `[a-z0-9_]` and at most 30 characters.
+ * Session ids contain hyphens and are far longer, so hash them.
+ */
 function volumeNameFor(session: SessionRef): string {
-  return `vol-${machineNameFor(session)}`.slice(0, 63);
+  const digest = createHash("sha256")
+    .update(`${session.agent_group_id}\0${session.id}`)
+    .digest("hex")
+    .slice(0, 26);
+  return `v_${digest}`;
+}
+
+/**
+ * Stage group config outside the volume mount path.
+ * Fly writes guest files before mounting `/workspace`, so paths under
+ * `/workspace/...` are hidden; `/etc/nanoclaw/agent/` survives and the
+ * runner copies onto the volume at boot.
+ */
+function collectGroupGuestFiles(groupFolder: string): FlyGuestFile[] {
+  const files: FlyGuestFile[] = [];
+  const groupDir = path.join(GROUPS_DIR, groupFolder);
+  for (const name of ["container.json", "CLAUDE.md"] as const) {
+    const hostPath = path.join(groupDir, name);
+    if (!fs.existsSync(hostPath)) continue;
+    files.push({
+      guestPath: `/etc/nanoclaw/agent/${name}`,
+      rawValue: fs.readFileSync(hostPath, "utf8"),
+    });
+  }
+  return files;
+}
+
+function toMachineFiles(files: FlyGuestFile[]): Array<{
+  guest_path: string;
+  raw_value: string;
+}> {
+  return files.map((f) => ({
+    guest_path: f.guestPath,
+    raw_value: Buffer.from(f.rawValue, "utf8").toString("base64"),
+  }));
 }
 
 function recordWakeFailure(sessionId: string, sessionDirectory: string): void {
@@ -137,21 +181,14 @@ function requireFlyConfig(env: NodeJS.ProcessEnv): {
     1,
     Number.parseInt(env.FLY_VOLUME_SIZE_GB ?? "3", 10) || 3,
   );
-  let gatewayHost = "127.0.0.1";
+  // Pass through full GATEWAY_BASE_URL when set so proxy rewrite can drop
+  // Docker's :10255 and use the public authority (e.g. ngrok host on 443/80).
   const gateway = (
     env.GATEWAY_BASE_URL ??
     env.ONECLI_GATEWAY_HOST ??
     ""
   ).trim();
-  if (gateway) {
-    try {
-      gatewayHost = new URL(
-        gateway.includes("://") ? gateway : `http://${gateway}`,
-      ).hostname;
-    } catch {
-      gatewayHost = gateway;
-    }
-  }
+  const gatewayHost = gateway || "127.0.0.1";
   return { image, region, volumeSizeGb, gatewayHost };
 }
 
@@ -181,12 +218,41 @@ async function ensureIdentityAndStart(
     throw new Error("OneCLI container-config unavailable — fail closed");
   }
 
+  const groupFolder = resolveGroupFolder(session.agent_group_id);
   const sessionioEnv = buildFlySessionioEnv(session, env);
-  const machineEnv = {
+  const baseEnv: Record<string, string> = {
     ...onecli.env,
     ...sessionioEnv,
     GROUPS_DIR: "/workspace/groups",
-    NANOCLAW_GROUP_FOLDER: resolveGroupFolder(session.agent_group_id),
+    NANOCLAW_GROUP_FOLDER: groupFolder,
+  };
+  // Docker/process get hosthook env (AGENTTRACE_*, …) via container-runner.
+  // Fly must merge the same contributors or observe stays fail-closed in-guest.
+  let hosthookEnv: Record<string, string> = {};
+  if (wakeDeps.containerEnv) {
+    hosthookEnv = wakeDeps.containerEnv(Object.keys(baseEnv));
+  } else {
+    try {
+      const mod = await import("./hosthooks.js");
+      if (typeof mod.runContainerEnvContributors === "function") {
+        hosthookEnv = mod.runContainerEnvContributors(Object.keys(baseEnv));
+      }
+    } catch {
+      // Package unit tests / hosts without hosthooks — leave empty.
+    }
+  }
+  const machineEnv = {
+    ...baseEnv,
+    ...hosthookEnv,
+  };
+  const guestFiles = [
+    ...onecli.files,
+    ...collectGroupGuestFiles(groupFolder),
+  ];
+  const guest = {
+    cpus: 1,
+    cpu_kind: "shared",
+    memory_mb: 1024,
   };
 
   let identity = readFlyIdentity(sessionDirectory);
@@ -203,7 +269,8 @@ async function ensureIdentityAndStart(
       env: machineEnv,
       volumeId: volume.id,
       volumeMountPath: "/workspace",
-      files: onecli.files,
+      files: guestFiles,
+      memoryMb: guest.memory_mb,
     });
     identity = {
       machineId: machine.id,
@@ -214,25 +281,66 @@ async function ensureIdentityAndStart(
     };
     writeFlyIdentity(sessionDirectory, identity);
   } else {
-    await client.updateMachineEnv(identity.machineId, {
-      image: identity.image,
-      env: machineEnv,
-      auto_destroy: false,
-      restart: { policy: "no" },
-      mounts: [{ volume: identity.volumeId, path: "/workspace" }],
-      files: onecli.files.map((f) => ({
-        guest_path: f.guestPath,
-        raw_value: Buffer.from(f.rawValue, "utf8").toString("base64"),
-      })),
-      services: [],
-    });
+    // Prefer current FLY_AGENT_IMAGE so rebuilds take effect on next wake.
+    const prevImage = identity.image;
+    identity = { ...identity, image };
+    writeFlyIdentity(sessionDirectory, identity);
+
+    // Fly applies config updates by restarting the Machine (SIGINT). Doing that
+    // on every chat message kills mid-turn work and feels like a cold start.
+    // Only POST an update when the Machine is not already running, or the
+    // pinned image changed.
+    //
+    // If getMachine fails, do NOT update — a blind update restarts a healthy
+    // Machine and can drop at-most-once HTTP inbound that was already taken.
+    let machineState: string | undefined;
+    let remoteImage: string | undefined;
+    let gotRemote = false;
+    let remoteEnv: Record<string, string> = {};
+    try {
+      const remote = await client.getMachine(identity.machineId);
+      gotRemote = true;
+      machineState = remote.state;
+      const cfg = remote.config ?? {};
+      remoteImage =
+        typeof cfg.image === "string" ? cfg.image : prevImage;
+      if (cfg.env && typeof cfg.env === "object") {
+        remoteEnv = cfg.env as Record<string, string>;
+      }
+    } catch (err) {
+      log.warn(
+        `fly getMachine ${identity.machineId} failed — skipping config update: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    const running =
+      machineState === "started" || machineState === "starting";
+    const imageChanged = Boolean(image) && image !== remoteImage;
+    // Push stable hosthook env (e.g. AGENTTRACE_*) without comparing OneCLI
+    // tokens, which can change every wake and would restart every message.
+    const needsHosthookEnv = Object.entries(hosthookEnv).some(
+      ([key, value]) => remoteEnv[key] !== value,
+    );
+    if (gotRemote && (!running || imageChanged || needsHosthookEnv)) {
+      await client.updateMachineEnv(identity.machineId, {
+        image,
+        env: machineEnv,
+        auto_destroy: false,
+        restart: { policy: "no" },
+        guest,
+        mounts: [{ volume: identity.volumeId, path: "/workspace" }],
+        files: toMachineFiles(guestFiles),
+        services: [],
+      });
+    }
   }
 
   fs.mkdirSync(path.join(sessionDirectory, FLY_RUNTIME_DIRNAME), {
     recursive: true,
   });
   await client.startMachine(identity.machineId);
-  await client.waitMachine(identity.machineId, "started", 120);
+  await client.waitMachine(identity.machineId, "started", 60);
   return identity;
 }
 
@@ -256,6 +364,31 @@ export async function wakeFly(
     return false;
   }
 
+  const existing = activeMachines.get(session.id);
+  if (existing && !existing.killing) {
+    // Keep DB in sync — delivery's 1s poll keys off container_status, and an
+    // early return used to leave a stale `stopped` row (60s sweep only).
+    markContainerRunning(session.id);
+    return true;
+  }
+
+  const inflight = wakeInflight.get(session.id);
+  if (inflight) return inflight;
+
+  const run = doWakeFly(session, sessionDirectory, ctx, env).finally(() => {
+    wakeInflight.delete(session.id);
+  });
+  wakeInflight.set(session.id, run);
+  return run;
+}
+
+async function doWakeFly(
+  session: SessionRef,
+  sessionDirectory: string,
+  ctx: WakeContext,
+  env: NodeJS.ProcessEnv,
+): Promise<boolean> {
+  // Re-check after waiting on another wake / before long ensure.
   const existing = activeMachines.get(session.id);
   if (existing && !existing.killing) {
     return true;
@@ -364,10 +497,18 @@ export async function cleanupFlyOrphans(): Promise<void> {
       try {
         const machine = await client.getMachine(identity.machineId);
         if (machine.state === "started" || machine.state === "starting") {
-          log.warn(
-            `fly orphan cleanup stopping machine ${identity.machineId} for ${sessionId}`,
+          // Host restart clears the in-memory map — re-adopt the live Machine
+          // instead of stopping it (that caused cold starts + delivery lag).
+          const markStopped = () => markContainerStopped(sessionId);
+          markContainerRunning(sessionId);
+          activeMachines.set(sessionId, {
+            machineId: identity.machineId,
+            sessionDir: dir,
+            markStopped,
+          });
+          log.info(
+            `fly rehydrated machine ${identity.machineId} for ${sessionId}`,
           );
-          await client.stopMachine(identity.machineId);
         }
       } catch (error) {
         log.warn(

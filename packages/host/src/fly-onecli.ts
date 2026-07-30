@@ -48,17 +48,50 @@ async function defaultClient(): Promise<FlyOneCliClient> {
 /* v8 ignore stop */
 
 /**
- * Replace host.docker.internal with a host the Machine can reach
- * (GATEWAY_BASE_URL host, WireGuard IP, or Flycast — operator-supplied).
+ * Authority (host or host:port) used when rewriting Docker-oriented proxy URLs.
+ * Prefer GATEWAY_BASE_URL so ngrok HTTPS hosts don't keep `:10255`.
+ */
+export function gatewayAuthorityFromBase(
+  gateway: string,
+  fallbackHost = "127.0.0.1",
+): string {
+  const raw = gateway.trim();
+  if (!raw) return fallbackHost;
+  try {
+    const url = new URL(raw.includes("://") ? raw : `http://${raw}`);
+    return url.port ? `${url.hostname}:${url.port}` : url.hostname;
+  } catch {
+    return raw.replace(/^https?:\/\//, "").split("/")[0] || fallbackHost;
+  }
+}
+
+/**
+ * Replace host.docker.internal[:port] with a host the Machine can reach
+ * (GATEWAY_BASE_URL authority, WireGuard IP, or Flycast — operator-supplied).
+ *
+ * When GATEWAY_BASE_URL is https (e.g. ngrok), also upgrade proxy URL schemes
+ * so clients don't hit an HTTP→HTTPS 307 on the tunnel edge.
  */
 export function rewriteDockerInternalHostnames(
   env: Record<string, string>,
   gatewayHost = "127.0.0.1",
 ): void {
+  const authority = gatewayAuthorityFromBase(gatewayHost, gatewayHost);
+  const gatewayIsHttps = /^\s*https:/i.test(gatewayHost);
+
   for (const [key, value] of Object.entries(env)) {
-    if (value.includes("host.docker.internal")) {
-      env[key] = value.split("host.docker.internal").join(gatewayHost);
+    let next = value;
+    if (next.includes("host.docker.internal")) {
+      next = next.replace(/host\.docker\.internal(?::\d+)?/g, authority);
     }
+    if (
+      gatewayIsHttps &&
+      /^(HTTPS?_PROXY|https?_proxy)$/.test(key) &&
+      /^http:\/\//i.test(next)
+    ) {
+      next = `https://${next.slice("http://".length)}`;
+    }
+    env[key] = next;
   }
 }
 

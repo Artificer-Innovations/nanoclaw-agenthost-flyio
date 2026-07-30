@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { startAgenthostFlyio } from "./fly-boot.js";
 
-const readEnvFile = vi.fn(() => ({}) as Record<string, string>);
+const readEnvFile = vi.fn((_keys: string[]): Record<string, string> => ({}));
 
 vi.mock("./env.js", () => ({
   readEnvFile: (keys: string[]) => readEnvFile(keys),

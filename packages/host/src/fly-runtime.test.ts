@@ -120,6 +120,35 @@ describe("fly-runtime", () => {
     expect(isFlyRunning("s1")).toBe(false);
   });
 
+  it("uses Fly-legal volume names (alnum/underscore, ≤30)", async () => {
+    let volumeName = "";
+    setFlyWakeDeps({
+      resolveSessionDir: () => sessionDir,
+      resolveGroupFolder: () => "folder",
+      createClient: () =>
+        mockClient({
+          createVolume: async (input) => {
+            volumeName = input.name;
+            return {
+              id: "vol_1",
+              name: input.name,
+              region: "iad",
+              size_gb: 3,
+            };
+          },
+        }),
+      applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
+      waitHealth: async () => {},
+    });
+    expect(
+      await wakeFly({
+        id: "sess-1785345864447-szsudq",
+        agent_group_id: "ag-1b973136-67ab-4cbd-a496-11fbf8cfa0e0",
+      }),
+    ).toBe(true);
+    expect(volumeName).toMatch(/^[a-z0-9_]{1,30}$/);
+  });
+
   it("wakes existing identity path", async () => {
     writeFlyIdentity(sessionDir, {
       machineId: "mach_existing",
@@ -134,7 +163,15 @@ describe("fly-runtime", () => {
     }));
     setFlyWakeDeps({
       resolveSessionDir: () => sessionDir,
-      createClient: () => mockClient({ updateMachineEnv: update }),
+      createClient: () =>
+        mockClient({
+          updateMachineEnv: update,
+          getMachine: async () => ({
+            id: "mach_existing",
+            state: "stopped",
+            config: { image: "img" },
+          }),
+        }),
       applyOneCli: async () => ({
         ok: true,
         env: {},
@@ -144,6 +181,75 @@ describe("fly-runtime", () => {
     });
     expect(await wakeFly({ id: "s2", agent_group_id: "ag" })).toBe(true);
     expect(update).toHaveBeenCalled();
+  });
+
+  it("does not update a started machine when image is unchanged", async () => {
+    writeFlyIdentity(sessionDir, {
+      machineId: "mach_hot",
+      volumeId: "vol_hot",
+      app: "agents",
+      region: "iad",
+      image: "registry.fly.io/agents@sha256:abc",
+    });
+    process.env.FLY_AGENT_IMAGE = "registry.fly.io/agents@sha256:abc";
+    const update = vi.fn(async () => ({ id: "mach_hot", state: "updated" }));
+    const start = vi.fn(async () => {});
+    setFlyWakeDeps({
+      resolveSessionDir: () => sessionDir,
+      createClient: () =>
+        mockClient({
+          updateMachineEnv: update,
+          startMachine: start,
+          getMachine: async () => ({
+            id: "mach_hot",
+            state: "started",
+            config: { image: "registry.fly.io/agents@sha256:abc" },
+          }),
+        }),
+      applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
+      waitHealth: async () => {},
+    });
+    expect(await wakeFly({ id: "s2b", agent_group_id: "ag" })).toBe(true);
+    expect(update).not.toHaveBeenCalled();
+    expect(start).toHaveBeenCalled();
+  });
+
+  it("coalesces concurrent wakes for the same session", async () => {
+    writeFlyIdentity(sessionDir, {
+      machineId: "mach_race",
+      volumeId: "vol_race",
+      app: "agents",
+      region: "iad",
+      image: "img",
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const update = vi.fn(async () => {
+      await gate;
+      return { id: "mach_race", state: "updated" };
+    });
+    setFlyWakeDeps({
+      resolveSessionDir: () => sessionDir,
+      createClient: () =>
+        mockClient({
+          updateMachineEnv: update,
+          getMachine: async () => ({
+            id: "mach_race",
+            state: "stopped",
+            config: { image: "img" },
+          }),
+        }),
+      applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
+      waitHealth: async () => {},
+    });
+    const a = wakeFly({ id: "s2c", agent_group_id: "ag" });
+    const b = wakeFly({ id: "s2c", agent_group_id: "ag" });
+    release();
+    expect(await a).toBe(true);
+    expect(await b).toBe(true);
+    expect(update).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed on filesystem transport hint", async () => {
@@ -213,7 +319,7 @@ describe("fly-runtime", () => {
     expect(isFlyRunning("s6")).toBe(false);
   });
 
-  it("cleanup orphans stops started machines", async () => {
+  it("cleanup orphans rehydrates started machines instead of stopping", async () => {
     const groupDir = path.join(DATA_DIR, "v2-sessions", "ag");
     const sid = "orphan1";
     const dir = path.join(groupDir, sid);
@@ -239,7 +345,8 @@ describe("fly-runtime", () => {
         }),
     });
     await cleanupFlyOrphans();
-    expect(stop).toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+    expect(isFlyRunning(sid)).toBe(true);
   });
 
   it("cleanup orphans no-ops without credentials when sessions exist", async () => {
@@ -281,13 +388,13 @@ describe("fly-runtime", () => {
     await cleanupFlyOrphans();
   });
 
-  it("parses gateway host from GATEWAY_BASE_URL", async () => {
+  it("passes GATEWAY_BASE_URL through for proxy rewrite", async () => {
     process.env.GATEWAY_BASE_URL = "http://onecli.internal:10255";
     setFlyWakeDeps({
       resolveSessionDir: () => sessionDir,
       createClient: () => mockClient(),
       applyOneCli: async (opts) => {
-        expect(opts?.gatewayHost).toBe("onecli.internal");
+        expect(opts?.gatewayHost).toBe("http://onecli.internal:10255");
         return { ok: true, env: {}, files: [] };
       },
       waitHealth: async () => {},
@@ -359,7 +466,7 @@ describe("fly-runtime", () => {
     await cleanupFlyOrphans();
   });
 
-  it("cleanup stops starting machines", async () => {
+  it("cleanup rehydrates starting machines", async () => {
     const dir = path.join(DATA_DIR, "v2-sessions", "ag", "starting");
     mkdirSync(dir, { recursive: true });
     writeFlyIdentity(dir, {
@@ -378,7 +485,8 @@ describe("fly-runtime", () => {
         }),
     });
     await cleanupFlyOrphans();
-    expect(stop).toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+    expect(isFlyRunning("starting")).toBe(true);
   });
 
   it("clears wake-blocked after successful wake following failures", async () => {

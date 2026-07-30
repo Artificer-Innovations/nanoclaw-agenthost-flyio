@@ -146,11 +146,13 @@ export class FlyMachinesClient {
   async waitMachine(
     machineId: string,
     state: string,
-    timeoutSec = 120,
+    // Fly Machines API caps WaitMachineRequest.Timeout at 60s.
+    timeoutSec = 60,
   ): Promise<FlyMachine> {
+    const capped = Math.min(60, Math.max(1, timeoutSec));
     return this.request<FlyMachine>(
       "GET",
-      `/apps/${this.app}/machines/${machineId}/wait?state=${encodeURIComponent(state)}&timeout=${timeoutSec}`,
+      `/apps/${this.app}/machines/${machineId}/wait?state=${encodeURIComponent(state)}&timeout=${capped}`,
     );
   }
 
