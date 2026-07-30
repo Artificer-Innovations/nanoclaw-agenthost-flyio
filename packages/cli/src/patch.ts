@@ -112,6 +112,7 @@ export function scavengeUnmarkedFlyRunnerRegister(content: string): string {
 export function insertFlyRunnerRegister(content: string): string {
   if (hasFlyRunnerRegister(content)) return content;
   let next = scavengeUnmarkedFlyRunnerRegister(content);
+  /* v8 ignore next — scavenge never inserts markers */
   if (hasFlyRunnerRegister(next)) return next;
   const block = `${RUNNER_REGISTER_BEGIN}\n${FLY_RUNNER_REGISTER_BODY}\n${RUNNER_REGISTER_END}\n`;
   const firstImport = next.search(/^import /m);

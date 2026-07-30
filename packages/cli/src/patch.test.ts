@@ -80,4 +80,15 @@ import './agenttrace/register.js';
     expect(cleaned).not.toContain("registerFlyRunner");
     expect(cleaned).toContain("import './agenttrace/register.js';");
   });
+
+  it("scavengeUnmarkedFlyRunnerRegister is a no-op when markers already present", () => {
+    const marked = insertFlyRunnerRegister("import './x.js';\n");
+    expect(scavengeUnmarkedFlyRunnerRegister(marked)).toBe(marked);
+  });
+
+  it("scavengeUnmarkedFlyRunnerRegister throws on pattern mismatch", () => {
+    expect(() =>
+      scavengeUnmarkedFlyRunnerRegister("const registerFlyRunner = 1;\n"),
+    ).toThrow(/Could not scavenge unmarked registerFlyRunner/);
+  });
 });

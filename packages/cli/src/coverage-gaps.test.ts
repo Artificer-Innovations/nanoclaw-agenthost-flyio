@@ -260,6 +260,41 @@ describe("coverage gaps", () => {
     expect(() => runInstall(root)).toThrow(/simulated rename failure/);
   });
 
+  it("rollback deletes newly created host files (previous === null)", () => {
+    root = mkdtempSync(path.join(tmpdir(), "ahf-rollback-new-"));
+    agenthostsOk(root);
+    sessionioOk(root);
+    writeFixture(
+      root,
+      "src/index.ts",
+      `async function main() {
+  // @nanoclaw-sessionio:index-boot:begin
+  startSessionio();
+  // @nanoclaw-sessionio:index-boot:end
+  await initChannelAdapters();
+}
+`,
+    );
+    writeFixture(root, "src/channels/index.ts", "export {};\n");
+    writeFixture(root, "container/agent-runner/src/index.ts", "export {};\n");
+    writeFixture(root, "package.json", "{}");
+
+    const originalRename = fs.renameSync;
+    let sawFlyBoot = false;
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      const result = originalRename(from, to);
+      if (String(to).endsWith("src/fly-boot.ts")) {
+        sawFlyBoot = true;
+        return result;
+      }
+      if (sawFlyBoot) throw new Error("fail-after-new-fly-file");
+      return result;
+    });
+
+    expect(() => runInstall(root)).toThrow(/fail-after-new-fly-file/);
+    expect(existsSync(path.join(root, "src/fly-boot.ts"))).toBe(false);
+  });
+
   it("uninstall removes empty fly runner dir", () => {
     root = mkdtempSync(path.join(tmpdir(), "ahf-un-"));
     agenthostsOk(root);
