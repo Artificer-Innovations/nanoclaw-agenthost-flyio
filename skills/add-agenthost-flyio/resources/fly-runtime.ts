@@ -244,6 +244,10 @@ async function ensureIdentityAndStart(
   const machineEnv = {
     ...baseEnv,
     ...hosthookEnv,
+    // Docker mounts host `.claude-shared` at /home/node/.claude. Fly only
+    // persists /workspace — keep Claude transcripts/config on the volume so
+    // resume survives Machine restarts (model changes, env updates, etc.).
+    CLAUDE_CONFIG_DIR: "/workspace/.claude",
   };
   const guestFiles = [
     ...onecli.files,
@@ -322,7 +326,12 @@ async function ensureIdentityAndStart(
     const needsHosthookEnv = Object.entries(hosthookEnv).some(
       ([key, value]) => remoteEnv[key] !== value,
     );
-    if (gotRemote && (!running || imageChanged || needsHosthookEnv)) {
+    const needsClaudePersist =
+      remoteEnv.CLAUDE_CONFIG_DIR !== machineEnv.CLAUDE_CONFIG_DIR;
+    if (
+      gotRemote &&
+      (!running || imageChanged || needsHosthookEnv || needsClaudePersist)
+    ) {
       await client.updateMachineEnv(identity.machineId, {
         image,
         env: machineEnv,
@@ -339,9 +348,48 @@ async function ensureIdentityAndStart(
   fs.mkdirSync(path.join(sessionDirectory, FLY_RUNTIME_DIRNAME), {
     recursive: true,
   });
-  await client.startMachine(identity.machineId);
-  await client.waitMachine(identity.machineId, "started", 60);
+  await startFlyMachineWhenReady(client, identity.machineId);
   return identity;
+}
+
+/** Fly refuses start while a config update is replacing the Machine. */
+async function startFlyMachineWhenReady(
+  client: FlyMachinesClient,
+  machineId: string,
+  opts: { timeoutMs?: number; sleepMs?: number } = {},
+): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 90_000;
+  const sleepMs = opts.sleepMs ?? 1_000;
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      const remote = await client.getMachine(machineId);
+      const state = remote.state ?? "";
+      if (state === "started" || state === "starting") {
+        await client.waitMachine(machineId, "started", 60);
+        return;
+      }
+      await client.startMachine(machineId);
+      await client.waitMachine(machineId, "started", 60);
+      return;
+    } catch (error) {
+      lastError = error;
+      const msg = error instanceof Error ? error.message : String(error);
+      if (
+        /getting replaced|unable to start machine from current state/i.test(msg)
+      ) {
+        await new Promise((r) => setTimeout(r, sleepMs));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(
+        `Fly machine ${machineId} not startable within ${timeoutMs}ms after update`,
+      );
 }
 
 export async function wakeFly(

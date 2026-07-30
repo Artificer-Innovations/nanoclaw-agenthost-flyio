@@ -203,7 +203,10 @@ describe("fly-runtime", () => {
           getMachine: async () => ({
             id: "mach_hot",
             state: "started",
-            config: { image: "registry.fly.io/agents@sha256:abc" },
+            config: {
+              image: "registry.fly.io/agents@sha256:abc",
+              env: { CLAUDE_CONFIG_DIR: "/workspace/.claude" },
+            },
           }),
         }),
       applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
@@ -211,7 +214,8 @@ describe("fly-runtime", () => {
     });
     expect(await wakeFly({ id: "s2b", agent_group_id: "ag" })).toBe(true);
     expect(update).not.toHaveBeenCalled();
-    expect(start).toHaveBeenCalled();
+    // Already started — wait only; do not POST /start (can race with replace).
+    expect(start).not.toHaveBeenCalled();
   });
 
   it("coalesces concurrent wakes for the same session", async () => {

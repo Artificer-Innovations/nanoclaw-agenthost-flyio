@@ -179,6 +179,7 @@ export function ensureFlyWorkspace(opts: EnsureFlyWorkspaceOpts = {}): string {
   mkdir(path.join(root, "groups", groupFolder), { recursive: true });
   mkdir(path.join(root, "inbox"), { recursive: true });
   mkdir(path.join(root, "outbox"), { recursive: true });
+  mkdir(path.join(root, ".claude"), { recursive: true });
 
   copyBootstrapAgentFiles(agentDir, bootstrapDir, opts);
   try {
