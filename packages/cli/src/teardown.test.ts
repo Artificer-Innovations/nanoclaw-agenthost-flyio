@@ -39,10 +39,10 @@ describe("runTeardown", () => {
 
     const calls: string[] = [];
     const result = await runTeardown(dir, {
-      fetchImpl: async (url: string, init?: RequestInit) => {
-        calls.push(`${init?.method} ${url}`);
+      fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
+        calls.push(`${init?.method} ${String(input)}`);
         return new Response(null, { status: 204 });
-      },
+      }) as typeof fetch,
     });
 
     expect(result.machinesDeleted).toBe(1);
