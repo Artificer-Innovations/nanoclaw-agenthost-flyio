@@ -74,12 +74,10 @@ registerFlyRunner(process.env, {
 });
 import './agenttrace/register.js';
 `;
-    expect(scavengeUnmarkedFlyRunnerRegister(unmarked)).not.toContain(
-      "registerFlyRunner",
-    );
     const cleaned = removeFlyRunnerRegister(unmarked);
     expect(cleaned).not.toContain("registerFlyRunner");
-    expect(cleaned).toContain("import './agenttrace/register.js';");
+    expect(cleaned).not.toMatch(/=>|console\.error/);
+    expect(cleaned.trim()).toBe("import './agenttrace/register.js';");
   });
 
   it("scavengeUnmarkedFlyRunnerRegister is a no-op when markers already present", () => {
@@ -95,12 +93,10 @@ registerFlyRunner(process.env, {
 })
 import './agenttrace/register.js';
 `;
-    expect(scavengeUnmarkedFlyRunnerRegister(unmarked)).not.toContain(
-      "registerFlyRunner",
-    );
-    expect(scavengeUnmarkedFlyRunnerRegister(unmarked)).toContain(
-      "import './agenttrace/register.js';",
-    );
+    const cleaned = scavengeUnmarkedFlyRunnerRegister(unmarked);
+    expect(cleaned).not.toContain("registerFlyRunner");
+    expect(cleaned).not.toMatch(/=>|console\.error/);
+    expect(cleaned.trim()).toBe("import './agenttrace/register.js';");
   });
 
   it("scavenges unmarked registerFlyRunner without semicolons and spaced call", () => {
@@ -110,7 +106,8 @@ import './keep.js';
 `;
     const cleaned = scavengeUnmarkedFlyRunnerRegister(unmarked);
     expect(cleaned).not.toContain("registerFlyRunner");
-    expect(cleaned).toContain("import './keep.js';");
+    expect(cleaned).not.toMatch(/=>|\{\s*\}/);
+    expect(cleaned.trim()).toBe("import './keep.js';");
   });
 
   it("scavengeUnmarkedFlyRunnerRegister throws on pattern mismatch", () => {

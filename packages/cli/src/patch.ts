@@ -99,8 +99,10 @@ export function hasFlyRunnerRegister(content: string): boolean {
 export function scavengeUnmarkedFlyRunnerRegister(content: string): string {
   if (content.includes(RUNNER_REGISTER_BEGIN)) return content;
   if (!content.includes("registerFlyRunner")) return content;
+  // Anchor on `process.env, { ... })` so nested `)` in arrow params cannot
+  // truncate the match early (optional trailing `;` alone is not enough).
   const pattern =
-    /import\s+\{\s*registerFlyRunner\s*\}\s+from\s+['"]\.\/fly\/register\.js['"]\s*;?\s*registerFlyRunner\s*\([\s\S]*?\)\s*;?/;
+    /import\s+\{\s*registerFlyRunner\s*\}\s+from\s+['"]\.\/fly\/register\.js['"]\s*;?\s*registerFlyRunner\s*\(\s*process\.env[\s\S]*?\}\s*\)\s*;?/;
   const next = content.replace(pattern, "");
   if (next === content) {
     throw new Error(
