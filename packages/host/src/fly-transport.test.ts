@@ -119,4 +119,30 @@ describe("fly-transport", () => {
       }),
     ).rejects.toThrow(/not ready/);
   });
+
+  it("caps backoff sleep to remaining time before deadline", async () => {
+    const sleeps: number[] = [];
+    let now = 1_000_000;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      await expect(
+        waitForSessionioHealth({
+          baseUrl: "http://mb",
+          retries: 5,
+          timeoutMs: 50,
+          sleep: async (ms) => {
+            sleeps.push(ms);
+            now += ms;
+          },
+          fetchImpl: (async () =>
+            new Response("no", { status: 503 })) as typeof fetch,
+        }),
+      ).rejects.toThrow(/not ready/);
+      expect(sleeps.length).toBeGreaterThan(0);
+      expect(Math.max(...sleeps)).toBeLessThanOrEqual(50);
+      expect(sleeps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(50);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
