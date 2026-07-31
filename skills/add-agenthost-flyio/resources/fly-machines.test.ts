@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   FlyMachinesClient,
   createFlyMachinesClientFromEnv,
+  isAttachableVolumeState,
 } from "./fly-machines.js";
 
 function jsonResponse(
@@ -14,6 +15,19 @@ function jsonResponse(
     headers: { "Content-Type": "application/json", ...headers },
   });
 }
+
+describe("isAttachableVolumeState", () => {
+  it("allows created / missing / empty and rejects terminal or unknown", () => {
+    expect(isAttachableVolumeState(undefined)).toBe(true);
+    expect(isAttachableVolumeState("")).toBe(true);
+    expect(isAttachableVolumeState("created")).toBe(true);
+    expect(isAttachableVolumeState("CREATED")).toBe(true);
+    expect(isAttachableVolumeState("pending_destroy")).toBe(false);
+    expect(isAttachableVolumeState("scheduling_destroy")).toBe(false);
+    expect(isAttachableVolumeState("dead")).toBe(false);
+    expect(isAttachableVolumeState("unavailable")).toBe(false);
+  });
+});
 
 describe("FlyMachinesClient", () => {
   it("creates volume and machine", async () => {
@@ -124,6 +138,176 @@ describe("FlyMachinesClient", () => {
       ).id,
     ).toBe("mach_existing");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips pending_destroy volumes and creates a fresh one", async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (
+        url.endsWith("/volumes") &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return jsonResponse([
+          {
+            id: "vol_dying",
+            name: "vol",
+            region: "iad",
+            size_gb: 3,
+            state: "pending_destroy",
+          },
+          {
+            id: "vol_dead",
+            name: "vol",
+            region: "iad",
+            size_gb: 3,
+            state: "scheduling_destroy",
+          },
+        ]);
+      }
+      if (url.includes("/volumes") && init?.method === "POST") {
+        return jsonResponse({
+          id: "vol_fresh",
+          name: "vol",
+          region: "iad",
+          size_gb: 3,
+          state: "created",
+        });
+      }
+      throw new Error(`unexpected ${init?.method} ${url}`);
+    });
+    const client = new FlyMachinesClient({
+      token: "t",
+      app: "agents",
+      fetchImpl,
+      sleep: async () => {},
+    });
+    expect(
+      (
+        await client.createVolume({
+          name: "vol",
+          region: "iad",
+          sizeGb: 3,
+        })
+      ).id,
+    ).toBe("vol_fresh");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("prefers an attachable volume when a destroy twin shares the name", async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (
+        url.endsWith("/volumes") &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return jsonResponse([
+          {
+            id: "vol_dying",
+            name: "vol",
+            region: "iad",
+            size_gb: 3,
+            state: "pending_destroy",
+          },
+          {
+            id: "vol_ok",
+            name: "vol",
+            region: "iad",
+            size_gb: 3,
+            state: "created",
+          },
+        ]);
+      }
+      throw new Error(`unexpected ${init?.method} ${url}`);
+    });
+    const client = new FlyMachinesClient({
+      token: "t",
+      app: "agents",
+      fetchImpl,
+      sleep: async () => {},
+    });
+    expect(
+      (
+        await client.createVolume({
+          name: "vol",
+          region: "iad",
+          sizeGb: 3,
+        })
+      ).id,
+    ).toBe("vol_ok");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips unknown volume states (fail closed) and creates a fresh one", async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (
+        url.endsWith("/volumes") &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return jsonResponse([
+          {
+            id: "vol_weird",
+            name: "vol",
+            region: "iad",
+            size_gb: 3,
+            state: "unavailable",
+          },
+        ]);
+      }
+      if (url.includes("/volumes") && init?.method === "POST") {
+        return jsonResponse({
+          id: "vol_fresh",
+          name: "vol",
+          region: "iad",
+          size_gb: 3,
+          state: "created",
+        });
+      }
+      throw new Error(`unexpected ${init?.method} ${url}`);
+    });
+    const client = new FlyMachinesClient({
+      token: "t",
+      app: "agents",
+      fetchImpl,
+      sleep: async () => {},
+    });
+    expect(
+      (
+        await client.createVolume({
+          name: "vol",
+          region: "iad",
+          sizeGb: 3,
+        })
+      ).id,
+    ).toBe("vol_fresh");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("reuses volumes that omit state (legacy list payloads)", async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (
+        url.endsWith("/volumes") &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return jsonResponse([
+          { id: "vol_legacy", name: "vol", region: "iad", size_gb: 3 },
+        ]);
+      }
+      throw new Error(`unexpected ${init?.method} ${url}`);
+    });
+    const client = new FlyMachinesClient({
+      token: "t",
+      app: "agents",
+      fetchImpl,
+      sleep: async () => {},
+    });
+    expect(
+      (
+        await client.createVolume({
+          name: "vol",
+          region: "iad",
+          sizeGb: 3,
+        })
+      ).id,
+    ).toBe("vol_legacy");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("does not retry create on network errors; looks up by name instead", async () => {
