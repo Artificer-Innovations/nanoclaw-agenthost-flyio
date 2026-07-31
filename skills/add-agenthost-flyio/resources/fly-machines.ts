@@ -115,7 +115,15 @@ export class FlyMachinesClient {
 
   async findVolumeByName(name: string): Promise<FlyVolume | undefined> {
     const volumes = await this.listVolumes();
-    return volumes.find((v) => v.name === name);
+    // After teardown, Fly keeps the old name visible in pending_destroy /
+    // scheduling_destroy for a while. Reusing those IDs makes createMachine
+    // fail with "volume not found". Only reuse attachable volumes so
+    // createVolume can mint a fresh one under the same name.
+    return volumes.find((v) => {
+      if (v.name !== name) return false;
+      const state = (v.state ?? "").toLowerCase();
+      return !state.includes("destroy") && state !== "dead";
+    });
   }
 
   async createMachine(input: CreateMachineInput): Promise<FlyMachine> {

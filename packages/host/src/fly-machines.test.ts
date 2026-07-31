@@ -126,6 +126,101 @@ describe("FlyMachinesClient", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it("skips pending_destroy volumes and creates a fresh one", async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (
+        url.endsWith("/volumes") &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return jsonResponse([
+          {
+            id: "vol_dying",
+            name: "vol",
+            region: "iad",
+            size_gb: 3,
+            state: "pending_destroy",
+          },
+          {
+            id: "vol_dead",
+            name: "vol",
+            region: "iad",
+            size_gb: 3,
+            state: "scheduling_destroy",
+          },
+        ]);
+      }
+      if (url.includes("/volumes") && init?.method === "POST") {
+        return jsonResponse({
+          id: "vol_fresh",
+          name: "vol",
+          region: "iad",
+          size_gb: 3,
+          state: "created",
+        });
+      }
+      throw new Error(`unexpected ${init?.method} ${url}`);
+    });
+    const client = new FlyMachinesClient({
+      token: "t",
+      app: "agents",
+      fetchImpl,
+      sleep: async () => {},
+    });
+    expect(
+      (
+        await client.createVolume({
+          name: "vol",
+          region: "iad",
+          sizeGb: 3,
+        })
+      ).id,
+    ).toBe("vol_fresh");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("prefers an attachable volume when a destroy twin shares the name", async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (
+        url.endsWith("/volumes") &&
+        (!init?.method || init.method === "GET")
+      ) {
+        return jsonResponse([
+          {
+            id: "vol_dying",
+            name: "vol",
+            region: "iad",
+            size_gb: 3,
+            state: "pending_destroy",
+          },
+          {
+            id: "vol_ok",
+            name: "vol",
+            region: "iad",
+            size_gb: 3,
+            state: "created",
+          },
+        ]);
+      }
+      throw new Error(`unexpected ${init?.method} ${url}`);
+    });
+    const client = new FlyMachinesClient({
+      token: "t",
+      app: "agents",
+      fetchImpl,
+      sleep: async () => {},
+    });
+    expect(
+      (
+        await client.createVolume({
+          name: "vol",
+          region: "iad",
+          sizeGb: 3,
+        })
+      ).id,
+    ).toBe("vol_ok");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("does not retry create on network errors; looks up by name instead", async () => {
     let postAttempts = 0;
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
