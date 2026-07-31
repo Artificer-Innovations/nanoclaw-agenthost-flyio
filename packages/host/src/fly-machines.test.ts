@@ -17,11 +17,15 @@ function jsonResponse(
 }
 
 describe("isAttachableVolumeState", () => {
-  it("allows created / missing / empty and rejects terminal or unknown", () => {
+  it("allows created / omitted state; rejects empty, non-string, terminal, or unknown", () => {
     expect(isAttachableVolumeState(undefined)).toBe(true);
-    expect(isAttachableVolumeState("")).toBe(true);
+    expect(isAttachableVolumeState("")).toBe(false);
+    expect(isAttachableVolumeState("   ")).toBe(false);
+    expect(isAttachableVolumeState(null)).toBe(false);
+    expect(isAttachableVolumeState(1 as unknown as string)).toBe(false);
     expect(isAttachableVolumeState("created")).toBe(true);
     expect(isAttachableVolumeState("CREATED")).toBe(true);
+    expect(isAttachableVolumeState("  created  ")).toBe(true);
     expect(isAttachableVolumeState("pending_destroy")).toBe(false);
     expect(isAttachableVolumeState("scheduling_destroy")).toBe(false);
     expect(isAttachableVolumeState("dead")).toBe(false);
