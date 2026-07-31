@@ -11,6 +11,7 @@ import {
 } from "./install.js";
 import { syncSkillToFork } from "./patch.js";
 import { findNanoclawRoot } from "./paths.js";
+import { runTeardown } from "./teardown.js";
 
 const USAGE = `Usage: nanoclaw-agenthost-flyio <command> [--path <nanoclaw-root>]
 
@@ -19,7 +20,8 @@ Commands:
   upgrade      Re-copy + re-patch (idempotent install)
   sync-skill   Copy bundled skill to .claude/skills/add-agenthost-flyio/
   verify       Check peers, files, and markers
-  uninstall    Remove files and boot block
+  teardown     Destroy Fly Machines + volumes for all .fly-machine.json identities
+  uninstall    Remove files/boot block, then teardown remote Fly resources
 `;
 
 function parseArgs(argv: string[]): { command: string; path?: string } {
@@ -35,7 +37,21 @@ function parseArgs(argv: string[]): { command: string; path?: string } {
   return { command, path: pathArg };
 }
 
-export function runCommand(argv: string[]): number {
+function printTeardownSummary(
+  label: string,
+  result: Awaited<ReturnType<typeof runTeardown>>,
+): void {
+  console.log(
+    `${label}: app=${result.app} machinesDeleted=${result.machinesDeleted} volumesDeleted=${result.volumesDeleted} errors=${result.errors}`,
+  );
+  for (const row of result.sessions) {
+    if (row.error) {
+      console.error(`  - ${row.sessionDir}: ${row.error}`);
+    }
+  }
+}
+
+export async function runCommand(argv: string[]): Promise<number> {
   const { command, path: pathArg } = parseArgs(argv);
 
   try {
@@ -66,12 +82,31 @@ export function runCommand(argv: string[]): number {
         console.log(`Verification passed for ${result.root}`);
         return 0;
       }
+      case "teardown": {
+        const result = await runTeardown(pathArg);
+        printTeardownSummary("Teardown", result);
+        return result.errors > 0 ? 1 : 0;
+      }
       case "uninstall": {
         const result = runUninstall(pathArg);
         console.log(`Removed agenthost-flyio from ${result.root}`);
         console.log(
           `Changed ${result.changed.length} files; deleted ${result.removed.length} files.`,
         );
+        try {
+          const td = await runTeardown(pathArg ?? result.root);
+          printTeardownSummary("Remote Fly teardown", td);
+        } catch (error) {
+          console.error(
+            `Remote Fly teardown skipped/failed: ${
+              /* v8 ignore next -- non-Error throws */
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          console.error(
+            "Destroy billed resources manually — see REMOVE.md (fly machines/volumes destroy).",
+          );
+        }
         console.log(
           "\nSee .claude/skills/add-agenthost-flyio/REMOVE.md if present.",
         );
@@ -107,14 +142,14 @@ export function isCliEntry(entryPath: string, argv: string[]): boolean {
   }
 }
 
-function main(): void {
-  process.exit(runCommand(process.argv));
+async function main(): Promise<void> {
+  process.exit(await runCommand(process.argv));
 }
 
 export { main };
 
 /* v8 ignore start */
 if (isCliEntry(fileURLToPath(import.meta.url), process.argv)) {
-  main();
+  void main();
 }
 /* v8 ignore stop */

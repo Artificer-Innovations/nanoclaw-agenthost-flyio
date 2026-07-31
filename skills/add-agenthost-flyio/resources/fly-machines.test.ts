@@ -295,6 +295,37 @@ describe("FlyMachinesClient", () => {
     await expect(client2.startMachine("x")).resolves.toBeUndefined();
   });
 
+  it("deleteMachine and deleteVolume issue DELETE", async () => {
+    const calls: string[] = [];
+    const client = new FlyMachinesClient({
+      token: "t",
+      app: "agents",
+      fetchImpl: async (url: string, init?: RequestInit) => {
+        calls.push(`${init?.method ?? "GET"} ${url}`);
+        return new Response(null, { status: 204 });
+      },
+      sleep: async () => {},
+    });
+    await client.deleteMachine("mach_1");
+    await client.deleteMachine("mach_2", false);
+    await client.deleteVolume("vol_1");
+    expect(
+      calls.some((c) => c.includes("DELETE") && c.includes("/machines/mach_1")),
+    ).toBe(true);
+    expect(calls.some((c) => c.includes("force=true"))).toBe(true);
+    expect(
+      calls.some(
+        (c) =>
+          c.includes("DELETE") &&
+          c.includes("/machines/mach_2") &&
+          !c.includes("force"),
+      ),
+    ).toBe(true);
+    expect(
+      calls.some((c) => c.includes("DELETE") && c.includes("/volumes/vol_1")),
+    ).toBe(true);
+  });
+
   it("wait and update helpers", async () => {
     const fetchImpl = vi.fn(async (url: string) => {
       if (url.includes("/wait"))

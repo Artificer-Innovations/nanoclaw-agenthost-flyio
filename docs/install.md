@@ -87,7 +87,7 @@ pnpm exec nanoclaw-agenthost-flyio verify
 
 `install` copies host + runner patches (boot registration, `src/fly/*` helpers). **`verify` does not publish an image** — you still need section 3.
 
-Uninstall later: flyio **before** sessionio/agenthosts (see skill `REMOVE.md`).
+Uninstall later: run **`teardown`** (destroys billed Machines/volumes), then uninstall flyio **before** sessionio/agenthosts (see skill `REMOVE.md`).
 
 ---
 
@@ -323,8 +323,9 @@ Filesystem transport + `runtime=fly` is rejected (driver `requiredTransport: 'ht
    ```
 
 5. Agent peers to sessionio; reply delivers on your channel.
-6. Idle / kill → Machine **stopped**, volume **retained** (by design — warm restart; Fly still bills stopped Machines + volumes until you destroy them).
+6. Idle / kill → Machine **stopped**, volume **retained** (warm restart). Billing continues until you destroy resources.
 7. Second wake reuses the same `machineId` / `volumeId` when possible.
+8. When removing the package: `pnpm exec nanoclaw-agenthost-flyio teardown` (also run by `uninstall`) destroys Machines + volumes for every `.fly-machine.json` — see skill `REMOVE.md`.
 
 ```bash
 fly machines list -a "$FLY_APP_AGENTS"

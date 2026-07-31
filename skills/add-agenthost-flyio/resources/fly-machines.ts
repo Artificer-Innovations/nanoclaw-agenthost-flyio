@@ -196,6 +196,27 @@ export class FlyMachinesClient {
     );
   }
 
+  /** Permanently delete a Machine (stops billing for the guest). */
+  async deleteMachine(machineId: string, force = true): Promise<void> {
+    const q = force ? "?force=true" : "";
+    await this.request<unknown>(
+      "DELETE",
+      `/apps/${this.app}/machines/${machineId}${q}`,
+      undefined,
+      { retryNetwork: false },
+    );
+  }
+
+  /** Permanently delete a Volume (stops billing for retained disk). */
+  async deleteVolume(volumeId: string): Promise<void> {
+    await this.request<unknown>(
+      "DELETE",
+      `/apps/${this.app}/volumes/${volumeId}`,
+      undefined,
+      { retryNetwork: false },
+    );
+  }
+
   async waitMachine(
     machineId: string,
     state: string,

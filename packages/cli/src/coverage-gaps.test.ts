@@ -160,10 +160,16 @@ describe("coverage gaps", () => {
     );
   });
 
-  it("runCommand catch path for Error", () => {
+  it("runCommand catch path for Error", async () => {
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     expect(
-      runCommand(["node", "bin.js", "install", "--path", "/tmp/nope-flyio"]),
+      await runCommand([
+        "node",
+        "bin.js",
+        "install",
+        "--path",
+        "/tmp/nope-flyio",
+      ]),
     ).toBe(1);
     expect(err).toHaveBeenCalled();
   });
@@ -228,7 +234,7 @@ describe("coverage gaps", () => {
     expect(result.ok).toBe(false);
   });
 
-  it("install rollback restores previous content", () => {
+  it("install rollback restores previous content", async () => {
     root = mkdtempSync(path.join(tmpdir(), "ahf-rollback-"));
     agenthostsOk(root);
     sessionioOk(root);
@@ -260,7 +266,7 @@ describe("coverage gaps", () => {
     expect(() => runInstall(root)).toThrow(/simulated rename failure/);
   });
 
-  it("rollback deletes newly created host files (previous === null)", () => {
+  it("rollback deletes newly created host files (previous === null)", async () => {
     root = mkdtempSync(path.join(tmpdir(), "ahf-rollback-new-"));
     agenthostsOk(root);
     sessionioOk(root);
@@ -295,7 +301,7 @@ describe("coverage gaps", () => {
     expect(existsSync(path.join(root, "src/fly-boot.ts"))).toBe(false);
   });
 
-  it("uninstall removes empty fly runner dir", () => {
+  it("uninstall removes empty fly runner dir", async () => {
     root = mkdtempSync(path.join(tmpdir(), "ahf-un-"));
     agenthostsOk(root);
     sessionioOk(root);
@@ -320,13 +326,13 @@ describe("coverage gaps", () => {
     );
   });
 
-  it("boot insert before awaited initChannelAdapters", () => {
+  it("boot insert before awaited initChannelAdapters", async () => {
     const source = `async function main() {\n  await initChannelAdapters();\n}\n`;
     expect(findFlyBootInsertIndex(source)).toBeGreaterThanOrEqual(0);
     expect(insertFlyBootBlockContent(source)).toContain("startAgenthostFlyio");
   });
 
-  it("install/verify/uninstall without explicit root use cwd", () => {
+  it("install/verify/uninstall without explicit root use cwd", async () => {
     root = mkdtempSync(path.join(tmpdir(), "ahf-cwd-"));
     agenthostsOk(root);
     sessionioOk(root);

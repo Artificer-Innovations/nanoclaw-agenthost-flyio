@@ -101,6 +101,7 @@ export const HOST_COPY_RULES: CopyRule[] = [
   { source: "fly-onecli.ts", dest: "src/fly-onecli.ts" },
   { source: "fly-transport.ts", dest: "src/fly-transport.ts" },
   { source: "fly-runtime.ts", dest: "src/fly-runtime.ts" },
+  { source: "fly-teardown.ts", dest: "src/fly-teardown.ts" },
 ];
 
 export const HOST_OPTIONAL_COPY_RULES: CopyRule[] = [
@@ -111,6 +112,7 @@ export const HOST_OPTIONAL_COPY_RULES: CopyRule[] = [
   { source: "fly-onecli.test.ts", dest: "src/fly-onecli.test.ts" },
   { source: "fly-transport.test.ts", dest: "src/fly-transport.test.ts" },
   { source: "fly-runtime.test.ts", dest: "src/fly-runtime.test.ts" },
+  { source: "fly-teardown.test.ts", dest: "src/fly-teardown.test.ts" },
   { source: "fly-wiring.test.ts", dest: "src/fly-wiring.test.ts" },
 ];
 

@@ -61,14 +61,14 @@ describe("bin", () => {
     expect(parseArgs(["node", "bin.js"]).command).toBe("help");
   });
 
-  it("runCommand help returns 0", () => {
-    expect(runCommand(["node", "bin.js", "help"])).toBe(0);
-    expect(runCommand(["node", "bin.js", "--help"])).toBe(0);
-    expect(runCommand(["node", "bin.js", "-h"])).toBe(0);
+  it("runCommand help returns 0", async () => {
+    expect(await runCommand(["node", "bin.js", "help"])).toBe(0);
+    expect(await runCommand(["node", "bin.js", "--help"])).toBe(0);
+    expect(await runCommand(["node", "bin.js", "-h"])).toBe(0);
   });
 
-  it("runCommand unknown returns 1", () => {
-    expect(runCommand(["node", "bin.js", "nope"])).toBe(1);
+  it("runCommand unknown returns 1", async () => {
+    expect(await runCommand(["node", "bin.js", "nope"])).toBe(1);
   });
 
   it("isCliEntry compares paths safely", () => {
@@ -78,7 +78,7 @@ describe("bin", () => {
     expect(isCliEntry("/missing-a", ["node", "/missing-a"])).toBe(true);
   });
 
-  it("main exits with runCommand status", () => {
+  it("main exits with runCommand status", async () => {
     const exit = vi.spyOn(process, "exit").mockImplementation(((
       code?: number,
     ) => {
@@ -87,45 +87,57 @@ describe("bin", () => {
     const prev = process.argv;
     process.argv = ["node", "bin.js", "help"];
     try {
-      expect(() => main()).toThrow(/exit:0/);
+      await expect(main()).rejects.toThrow(/exit:0/);
     } finally {
       process.argv = prev;
       exit.mockRestore();
     }
   });
 
-  it("runCommand prints non-Error throws", () => {
+  it("runCommand prints non-Error throws", async () => {
     vi.spyOn(install, "runInstall").mockImplementation(() => {
       throw "raw-failure";
     });
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(runCommand(["node", "bin.js", "install", "--path", "/tmp"])).toBe(1);
+    expect(
+      await runCommand(["node", "bin.js", "install", "--path", "/tmp"]),
+    ).toBe(1);
     expect(err).toHaveBeenCalledWith("raw-failure");
   });
 
-  it("install / verify / sync-skill / uninstall via runCommand", () => {
+  it("install / verify / sync-skill / uninstall via runCommand", async () => {
     root = seedFixture();
-    expect(runCommand(["node", "bin.js", "install", "--path", root])).toBe(0);
-    expect(runCommand(["node", "bin.js", "upgrade", "--path", root])).toBe(0);
-    expect(runCommand(["node", "bin.js", "verify", "--path", root])).toBe(0);
-    expect(runCommand(["node", "bin.js", "sync-skill", "--path", root])).toBe(
+    expect(
+      await runCommand(["node", "bin.js", "install", "--path", root]),
+    ).toBe(0);
+    expect(
+      await runCommand(["node", "bin.js", "upgrade", "--path", root]),
+    ).toBe(0);
+    expect(await runCommand(["node", "bin.js", "verify", "--path", root])).toBe(
       0,
     );
-    expect(runCommand(["node", "bin.js", "uninstall", "--path", root])).toBe(0);
+    expect(
+      await runCommand(["node", "bin.js", "sync-skill", "--path", root]),
+    ).toBe(0);
+    expect(
+      await runCommand(["node", "bin.js", "uninstall", "--path", root]),
+    ).toBe(0);
   });
 
-  it("verify returns 1 on failure", () => {
+  it("verify returns 1 on failure", async () => {
     root = seedFixture();
     rmSync(path.join(root, "src/agenthosts.ts"));
-    expect(runCommand(["node", "bin.js", "verify", "--path", root])).toBe(1);
+    expect(await runCommand(["node", "bin.js", "verify", "--path", root])).toBe(
+      1,
+    );
   });
 
-  it("sync-skill without --path uses findNanoclawRoot from cwd", () => {
+  it("sync-skill without --path uses findNanoclawRoot from cwd", async () => {
     root = seedFixture();
     const prev = process.cwd();
     process.chdir(root);
     try {
-      expect(runCommand(["node", "bin.js", "sync-skill"])).toBe(0);
+      expect(await runCommand(["node", "bin.js", "sync-skill"])).toBe(0);
     } finally {
       process.chdir(prev);
     }
