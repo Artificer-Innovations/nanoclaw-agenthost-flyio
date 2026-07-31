@@ -17,10 +17,12 @@ function jsonResponse(
 }
 
 describe("isAttachableVolumeState", () => {
-  it("allows created / omitted state; rejects empty, terminal, or unknown", () => {
+  it("allows created / omitted state; rejects empty, non-string, terminal, or unknown", () => {
     expect(isAttachableVolumeState(undefined)).toBe(true);
     expect(isAttachableVolumeState("")).toBe(false);
     expect(isAttachableVolumeState("   ")).toBe(false);
+    expect(isAttachableVolumeState(null)).toBe(false);
+    expect(isAttachableVolumeState(1 as unknown as string)).toBe(false);
     expect(isAttachableVolumeState("created")).toBe(true);
     expect(isAttachableVolumeState("CREATED")).toBe(true);
     expect(isAttachableVolumeState("  created  ")).toBe(true);
