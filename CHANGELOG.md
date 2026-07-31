@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+### Patch Changes
+
+- Skip non-attachable Fly volumes when reusing by name (allowlist: `created` / legacy omit of `state`) so wake can create a fresh volume instead of failing with "volume not found". Empty or whitespace `state` fails closed (not treated as legacy omit).
+
 ## 0.1.0
 
 - Initial release: Fly Machines `RuntimeDriver` (`fly`) with `requiredTransport: http`

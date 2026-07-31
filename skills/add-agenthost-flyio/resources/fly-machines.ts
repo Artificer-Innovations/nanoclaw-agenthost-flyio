@@ -24,7 +24,8 @@ export interface FlyVolume {
   name: string;
   region: string;
   size_gb: number;
-  state?: string;
+  /** Omitted on some legacy list payloads; may be JSON `null` at runtime. */
+  state?: string | null;
 }
 
 export interface FlyMachine {
@@ -51,6 +52,21 @@ export interface CreateMachineInput {
   files?: Array<{ guestPath: string; rawValue: string }>;
   cpus?: number;
   memoryMb?: number;
+}
+
+/**
+ * Whether a Fly volume `state` is safe to attach to a new machine.
+ * Legacy list payloads omit `state` (`undefined`) — treat those as attachable
+ * (prior behavior). Empty/whitespace, non-strings (e.g. JSON `null`), and any
+ * other value fail closed so createVolume mints a fresh volume instead of
+ * reusing an unknown state. (`JSON.parse` is not runtime-validated.)
+ */
+export function isAttachableVolumeState(
+  state: string | null | undefined,
+): boolean {
+  if (state === undefined) return true;
+  if (typeof state !== "string") return false;
+  return state.trim().toLowerCase() === "created";
 }
 
 /* v8 ignore start */
@@ -115,7 +131,15 @@ export class FlyMachinesClient {
 
   async findVolumeByName(name: string): Promise<FlyVolume | undefined> {
     const volumes = await this.listVolumes();
-    return volumes.find((v) => v.name === name);
+    // After teardown, Fly keeps the old name visible in pending_destroy /
+    // scheduling_destroy for a while. Reusing those IDs makes createMachine
+    // fail with "volume not found". Only reuse known-attachable volumes so
+    // createVolume can mint a fresh one under the same name. Allowlist
+    // (fail closed) rather than denylist so unknown terminal states do not
+    // silently reproduce the bug.
+    return volumes.find(
+      (v) => v.name === name && isAttachableVolumeState(v.state),
+    );
   }
 
   async createMachine(input: CreateMachineInput): Promise<FlyMachine> {
