@@ -24,6 +24,7 @@ describe("patch boot block", () => {
     expect(insertFlyBootBlockContent(next)).toBe(next);
     const removed = removeFlyBootBlockContent(next);
     expect(hasFlyBootBlock(removed)).toBe(false);
+    expect(removed).not.toMatch(/\n{3,}/);
   });
 
   it("finds insert points", () => {

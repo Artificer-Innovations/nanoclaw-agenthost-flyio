@@ -71,7 +71,8 @@ export function insertFlyBootBlockContent(content: string): string {
 export function removeFlyBootBlockContent(content: string): string {
   const pattern =
     /\r?\n?[ \t]*\/\/ @nanoclaw-agenthost-flyio:boot:begin\r?\n[\s\S]*?[ \t]*\/\/ @nanoclaw-agenthost-flyio:boot:end\r?\n?/;
-  return content.replace(pattern, "\n");
+  // Collapse blank runs left where the boot block sat (install wraps with \n).
+  return content.replace(pattern, "\n").replace(/\n{3,}/g, "\n\n");
 }
 
 const RUNNER_REGISTER_BEGIN = `// ${FLY_MARKER}:runner-register:begin`;
