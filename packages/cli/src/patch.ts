@@ -100,7 +100,7 @@ export function scavengeUnmarkedFlyRunnerRegister(content: string): string {
   if (content.includes(RUNNER_REGISTER_BEGIN)) return content;
   if (!content.includes("registerFlyRunner")) return content;
   const pattern =
-    /import \{ registerFlyRunner \} from ['"]\.\/fly\/register\.js['"];\r?\nregisterFlyRunner\([\s\S]*?\);\r?\n?/;
+    /import\s+\{\s*registerFlyRunner\s*\}\s+from\s+['"]\.\/fly\/register\.js['"]\s*;?\s*registerFlyRunner\s*\([\s\S]*?\)\s*;?/;
   const next = content.replace(pattern, "");
   if (next === content) {
     throw new Error(

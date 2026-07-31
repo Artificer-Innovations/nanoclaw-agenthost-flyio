@@ -132,7 +132,9 @@ export async function waitForSessionioHealth(
     } catch (error) {
       lastError = error;
     }
-    await sleep(Math.min(1000, 100 * 2 ** i));
+    if (i < retries && Date.now() <= deadline) {
+      await sleep(Math.min(1000, 100 * 2 ** i));
+    }
   }
   throw new Error(
     `sessionio HTTP not ready at ${base}/health: ${

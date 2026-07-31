@@ -87,6 +87,32 @@ import './agenttrace/register.js';
     expect(scavengeUnmarkedFlyRunnerRegister(marked)).toBe(marked);
   });
 
+  it("scavenges unmarked registerFlyRunner with flexible whitespace and quotes", () => {
+    const unmarked = `import  {  registerFlyRunner  }  from  "./fly/register.js"
+registerFlyRunner(process.env, {
+  info: (msg) => console.error(\`[agent-runner] \${msg}\`),
+  warn: (msg) => console.error(\`[agent-runner] \${msg}\`),
+})
+import './agenttrace/register.js';
+`;
+    expect(scavengeUnmarkedFlyRunnerRegister(unmarked)).not.toContain(
+      "registerFlyRunner",
+    );
+    expect(scavengeUnmarkedFlyRunnerRegister(unmarked)).toContain(
+      "import './agenttrace/register.js';",
+    );
+  });
+
+  it("scavenges unmarked registerFlyRunner without semicolons and spaced call", () => {
+    const unmarked = `import {registerFlyRunner} from './fly/register.js'
+  registerFlyRunner (process.env, { info: () => {}, warn: () => {} })
+import './keep.js';
+`;
+    const cleaned = scavengeUnmarkedFlyRunnerRegister(unmarked);
+    expect(cleaned).not.toContain("registerFlyRunner");
+    expect(cleaned).toContain("import './keep.js';");
+  });
+
   it("scavengeUnmarkedFlyRunnerRegister throws on pattern mismatch", () => {
     expect(() =>
       scavengeUnmarkedFlyRunnerRegister("const registerFlyRunner = 1;\n"),
