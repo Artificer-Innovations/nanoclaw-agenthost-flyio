@@ -55,12 +55,13 @@ export interface CreateMachineInput {
 
 /**
  * Whether a Fly volume `state` is safe to attach to a new machine.
- * Legacy list payloads omit `state` — treat those as attachable (prior behavior).
- * Unknown/terminal states fail closed so createVolume mints a fresh volume.
+ * Legacy list payloads omit `state` (`undefined`) — treat those as attachable
+ * (prior behavior). Empty/whitespace and any other value fail closed so
+ * createVolume mints a fresh volume instead of reusing an unknown state.
  */
 export function isAttachableVolumeState(state: string | undefined): boolean {
-  if (!state) return true;
-  return state.toLowerCase() === "created";
+  if (state === undefined) return true;
+  return state.trim().toLowerCase() === "created";
 }
 
 /* v8 ignore start */
