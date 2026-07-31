@@ -53,6 +53,16 @@ export interface CreateMachineInput {
   memoryMb?: number;
 }
 
+/**
+ * Whether a Fly volume `state` is safe to attach to a new machine.
+ * Legacy list payloads omit `state` — treat those as attachable (prior behavior).
+ * Unknown/terminal states fail closed so createVolume mints a fresh volume.
+ */
+export function isAttachableVolumeState(state: string | undefined): boolean {
+  if (!state) return true;
+  return state.toLowerCase() === "created";
+}
+
 /* v8 ignore start */
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -115,7 +125,15 @@ export class FlyMachinesClient {
 
   async findVolumeByName(name: string): Promise<FlyVolume | undefined> {
     const volumes = await this.listVolumes();
-    return volumes.find((v) => v.name === name);
+    // After teardown, Fly keeps the old name visible in pending_destroy /
+    // scheduling_destroy for a while. Reusing those IDs makes createMachine
+    // fail with "volume not found". Only reuse known-attachable volumes so
+    // createVolume can mint a fresh one under the same name. Allowlist
+    // (fail closed) rather than denylist so unknown terminal states do not
+    // silently reproduce the bug.
+    return volumes.find(
+      (v) => v.name === name && isAttachableVolumeState(v.state),
+    );
   }
 
   async createMachine(input: CreateMachineInput): Promise<FlyMachine> {
