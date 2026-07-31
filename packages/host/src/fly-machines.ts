@@ -131,7 +131,9 @@ export class FlyMachinesClient {
     // createVolume can mint a fresh one under the same name. Allowlist
     // (fail closed) rather than denylist so unknown terminal states do not
     // silently reproduce the bug.
-    return volumes.find((v) => v.name === name && isAttachableVolumeState(v.state));
+    return volumes.find(
+      (v) => v.name === name && isAttachableVolumeState(v.state),
+    );
   }
 
   async createMachine(input: CreateMachineInput): Promise<FlyMachine> {
