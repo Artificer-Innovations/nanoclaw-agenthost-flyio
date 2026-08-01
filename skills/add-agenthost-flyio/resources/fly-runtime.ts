@@ -686,6 +686,22 @@ export async function startFlyMachineWhenReady(
       );
 }
 
+/**
+ * If we already track a live Machine, confirm with Fly and return true.
+ * Shared by wakeFly (warm path) and doWakeFly (post-race re-check).
+ */
+async function tryWarmLiveReturn(sessionId: string): Promise<boolean> {
+  const existing = activeMachines.get(sessionId);
+  if (!existing || existing.killing) return false;
+  // Dashboard stop leaves the map lying — verify Fly before trusting it.
+  const status = await reconcileTrackedMachine(sessionId, existing);
+  if (status !== "live") return false;
+  // Keep DB in sync — delivery's 1s poll keys off container_status, and an
+  // early return used to leave a stale `stopped` row (60s sweep only).
+  markContainerRunning(sessionId);
+  return true;
+}
+
 export async function wakeFly(
   session: SessionRef,
   ctx: WakeContext = {},
@@ -708,18 +724,7 @@ export async function wakeFly(
     return false;
   }
 
-  const existing = activeMachines.get(session.id);
-  if (existing && !existing.killing) {
-    // Dashboard stop leaves the map lying — verify Fly before trusting it.
-    const status = await reconcileTrackedMachine(session.id, existing);
-    if (status === "live") {
-      // Keep DB in sync — delivery's 1s poll keys off container_status, and an
-      // early return used to leave a stale `stopped` row (60s sweep only).
-      markContainerRunning(session.id);
-      return true;
-    }
-    // stale → fall through to full wake / start
-  }
+  if (await tryWarmLiveReturn(session.id)) return true;
 
   const inflight = wakeInflight.get(session.id);
   if (inflight) return inflight;
@@ -737,12 +742,9 @@ async function doWakeFly(
   ctx: WakeContext,
   env: NodeJS.ProcessEnv,
 ): Promise<boolean> {
-  // Re-check after waiting on another wake / before long ensure.
-  const existing = activeMachines.get(session.id);
-  if (existing && !existing.killing) {
-    const status = await reconcileTrackedMachine(session.id, existing);
-    if (status === "live") return true;
-  }
+  // Re-check after a raced peer wake populated activeMachines.
+  /* v8 ignore next -- narrow race with concurrent doWakeFly; warm path covered via wakeFly */
+  if (await tryWarmLiveReturn(session.id)) return true;
 
   try {
     emitFlyStatus(session, ctx, "preparing", "Waking agent…");

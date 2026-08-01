@@ -1,4 +1,4 @@
-import {
+import fs, {
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -97,6 +97,43 @@ describe("fly-runtime", () => {
     writeFileSync(path.join(sessionDir, FLY_WAKE_BLOCKED_FILENAME), "blocked");
     setFlyWakeDeps({ resolveSessionDir: () => sessionDir });
     expect(await wakeFly({ id: "s1", agent_group_id: "ag" })).toBe(false);
+  });
+
+  it("falls back to publishRuntimeActivity when onStatus is absent", async () => {
+    const publish = vi.fn(async () => {
+      throw new Error("status sink failed");
+    });
+    setFlyWakeDeps({
+      resolveSessionDir: () => sessionDir,
+      resolveGroupFolder: () => "folder",
+      createClient: () => mockClient(),
+      applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
+      waitHealth: async () => {},
+      publishRuntimeActivity: publish,
+    });
+    expect(await wakeFly({ id: "s-pub", agent_group_id: "ag" }, {})).toBe(true);
+    expect(publish).toHaveBeenCalled();
+    await Promise.resolve();
+  });
+
+  it("ignores onStatus throws during wake", async () => {
+    setFlyWakeDeps({
+      resolveSessionDir: () => sessionDir,
+      resolveGroupFolder: () => "folder",
+      createClient: () => mockClient(),
+      applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
+      waitHealth: async () => {},
+    });
+    expect(
+      await wakeFly(
+        { id: "s-throw", agent_group_id: "ag" },
+        {
+          onStatus: () => {
+            throw new Error("ui blew up");
+          },
+        },
+      ),
+    ).toBe(true);
   });
 
   it("wakes create path and tracks running", async () => {
@@ -488,6 +525,33 @@ describe("fly-runtime", () => {
     expect(existsSync(blockedPath)).toBe(false);
   });
 
+  it("clears wake-blocked when the marker cannot be stated", async () => {
+    const blockedPath = path.join(sessionDir, FLY_WAKE_BLOCKED_FILENAME);
+    writeFileSync(blockedPath, "blocked\n");
+    const realStat = fs.statSync.bind(fs);
+    const statSpy = vi.spyOn(fs, "statSync").mockImplementation(((
+      p: fs.PathLike,
+      opts?: Parameters<typeof fs.statSync>[1],
+    ) => {
+      if (String(p) === blockedPath) throw new Error("EIO");
+      return realStat(p, opts as never);
+    }) as typeof fs.statSync);
+
+    setFlyWakeDeps({
+      resolveSessionDir: () => sessionDir,
+      resolveGroupFolder: () => "folder",
+      createClient: () => mockClient(),
+      applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
+      waitHealth: async () => {},
+    });
+    try {
+      expect(await wakeFly({ id: "s5-stat", agent_group_id: "ag" })).toBe(true);
+      expect(existsSync(blockedPath)).toBe(false);
+    } finally {
+      statSpy.mockRestore();
+    }
+  });
+
   it("re-wakes when dashboard stopped the tracked machine", async () => {
     let state = "stopped";
     const start = vi.fn(async () => {
@@ -517,6 +581,67 @@ describe("fly-runtime", () => {
     );
     expect(start).toHaveBeenCalled();
     expect(isFlyRunning("s-clickops")).toBe(true);
+  });
+
+  it("re-wakes when tracked machine disappears (404) on warm reconcile", async () => {
+    const deadIds = new Set<string>();
+    let seq = 0;
+    const createMachine = vi.fn(async () => {
+      seq += 1;
+      return { id: `mach_${seq}`, state: "created" };
+    });
+    setFlyWakeDeps({
+      resolveSessionDir: () => sessionDir,
+      resolveGroupFolder: () => "folder",
+      createClient: () =>
+        mockClient({
+          getMachine: async (id: string) => {
+            if (deadIds.has(id)) {
+              throw new Error(
+                `Fly Machines API GET /apps/agents/machines/${id} failed: 404 not found`,
+              );
+            }
+            return { id, state: "started" };
+          },
+          createMachine,
+        }),
+      applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
+      waitHealth: async () => {},
+    });
+    expect(await wakeFly({ id: "s-gone", agent_group_id: "ag" })).toBe(true);
+    deadIds.add("mach_1");
+    createMachine.mockClear();
+    expect(await wakeFly({ id: "s-gone", agent_group_id: "ag" })).toBe(true);
+    expect(createMachine).toHaveBeenCalled();
+    expect(isFlyRunning("s-gone")).toBe(true);
+  });
+
+  it("trusts in-memory running on transient warm reconcile errors", async () => {
+    const createMachine = vi.fn(async () => ({
+      id: "mach_1",
+      state: "created",
+    }));
+    let blowUp = false;
+    setFlyWakeDeps({
+      resolveSessionDir: () => sessionDir,
+      resolveGroupFolder: () => "folder",
+      createClient: () =>
+        mockClient({
+          getMachine: async () => {
+            if (blowUp) throw new Error("ETIMEDOUT");
+            return { id: "mach_1", state: "started" };
+          },
+          createMachine,
+        }),
+      applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
+      waitHealth: async () => {},
+    });
+    expect(await wakeFly({ id: "s-blip", agent_group_id: "ag" })).toBe(true);
+    blowUp = true;
+    createMachine.mockClear();
+    expect(await wakeFly({ id: "s-blip", agent_group_id: "ag" })).toBe(true);
+    expect(createMachine).not.toHaveBeenCalled();
+    expect(isFlyRunning("s-blip")).toBe(true);
   });
 
   it("recreates identity when Fly machine was destroyed", async () => {
@@ -554,6 +679,45 @@ describe("fly-runtime", () => {
     expect(isFlyRunning("s-destroy")).toBe(true);
   });
 
+  it("clears identity when getMachine reports destroyed/destroying state", async () => {
+    for (const state of ["destroyed", "destroying"] as const) {
+      resetFlyDriverStateForTests();
+      process.env.NANOCLAW_ALLOW_FLY_RUNTIME = "1";
+      process.env.SESSIONIO_TRANSPORT = "http";
+      writeFlyIdentity(sessionDir, {
+        machineId: `mach_${state}`,
+        volumeId: "vol_old",
+        app: "agents",
+        region: "iad",
+        image: "registry.fly.io/agent:old",
+      });
+      const createMachine = vi.fn(async () => ({
+        id: `mach_new_${state}`,
+        state: "created",
+      }));
+      setFlyWakeDeps({
+        resolveSessionDir: () => sessionDir,
+        resolveGroupFolder: () => "folder",
+        createClient: () =>
+          mockClient({
+            getMachine: async (id: string) => {
+              if (id === `mach_${state}`) {
+                return { id, state };
+              }
+              return { id, state: "started" };
+            },
+            createMachine,
+          }),
+        applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
+        waitHealth: async () => {},
+      });
+      expect(await wakeFly({ id: `s-${state}`, agent_group_id: "ag" })).toBe(
+        true,
+      );
+      expect(createMachine).toHaveBeenCalled();
+    }
+  });
+
   it("classifies machine-gone and transport errors as retryable", () => {
     expect(
       isMachineGoneError(
@@ -567,12 +731,31 @@ describe("fly-runtime", () => {
         ),
       ),
     ).toBe(true);
+    expect(isMachineGoneError(new Error("no machine"))).toBe(true);
+    expect(isMachineGoneError(new Error("machine xyz does not exist"))).toBe(
+      true,
+    );
     expect(isMachineGoneError(new Error("volume not found"))).toBe(false);
+    expect(isMachineGoneError(new Error("image not found"))).toBe(false);
+    expect(
+      isMachineGoneError(
+        new Error(
+          "Fly Machines API GET /apps/agents/machines/m1 failed: 404 (volume still listed)",
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isMachineGoneError(
+        new Error("Fly Machines API GET /apps/agents/machines/m1 ok"),
+      ),
+    ).toBe(false);
     expect(
       isRetryableWakeError(
         new Error("sessionio HTTP not ready at https://x/health: status 404"),
       ),
     ).toBe(true);
+    expect(isRetryableWakeError("sessionio not ready")).toBe(true);
+    expect(isMachineGoneError("no machine")).toBe(true);
     expect(isRetryableWakeError(new Error("volume not found"))).toBe(false);
     expect(
       isRetryableWakeError(
@@ -751,6 +934,35 @@ describe("fly-runtime", () => {
         }),
     });
     await cleanupFlyOrphans();
+  });
+
+  it("cleanup skips tracked machines that are mid-kill", async () => {
+    let releaseStop!: () => void;
+    const stopGate = new Promise<void>((r) => {
+      releaseStop = r;
+    });
+    const getMachine = vi.fn(async () => ({ id: "mach_1", state: "started" }));
+    setFlyWakeDeps({
+      resolveSessionDir: () => sessionDir,
+      resolveGroupFolder: () => "folder",
+      createClient: () =>
+        mockClient({
+          getMachine,
+          stopMachine: async () => {
+            await stopGate;
+          },
+        }),
+      applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
+      waitHealth: async () => {},
+    });
+    expect(await wakeFly({ id: "s-killing", agent_group_id: "ag" })).toBe(true);
+    getMachine.mockClear();
+    killFly("s-killing", "test");
+    await cleanupFlyOrphans();
+    // Mid-kill entries are skipped — no reconcile getMachine for them.
+    expect(getMachine).not.toHaveBeenCalled();
+    releaseStop();
+    await new Promise((r) => setTimeout(r, 10));
   });
 
   it("cleanup rehydrates starting machines", async () => {
@@ -959,6 +1171,21 @@ describe("fly-runtime", () => {
         () => ({}),
       ),
     ).toBe("http://chat.example.test:443");
+  });
+
+  it("startFlyMachineWhenReady short-circuits when already started or starting", async () => {
+    for (const state of ["started", "starting"] as const) {
+      const start = vi.fn(async () => {});
+      await startFlyMachineWhenReady(
+        mockClient({
+          getMachine: async () => ({ id: "m", state }),
+          startMachine: start,
+          waitMachine: async () => ({ id: "m", state: "started" }),
+        }),
+        "m",
+      );
+      expect(start).not.toHaveBeenCalled();
+    }
   });
 
   it("retries start while machine is getting replaced", async () => {
