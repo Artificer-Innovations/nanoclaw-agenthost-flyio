@@ -172,7 +172,10 @@ describe("fly-runtime", () => {
       waitHealth: async () => {},
     });
     expect(
-      await wakeFly({ id: "s-fail-status", agent_group_id: "ag" }, { onStatus }),
+      await wakeFly(
+        { id: "s-fail-status", agent_group_id: "ag" },
+        { onStatus },
+      ),
     ).toBe(false);
     expect(onStatus.mock.calls.map((c) => c[0])).toContain("failed");
     expect(onStatus).toHaveBeenCalledWith(
@@ -437,7 +440,9 @@ describe("fly-runtime", () => {
     setFlyWakeDeps({
       resolveSessionDir: () => sessionDir,
       waitHealth: async () => {
-        throw new Error("sessionio HTTP not ready at https://x/health: status 404");
+        throw new Error(
+          "sessionio HTTP not ready at https://x/health: status 404",
+        );
       },
       createClient: () => mockClient(),
       applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
@@ -556,10 +561,19 @@ describe("fly-runtime", () => {
       ),
     ).toBe(true);
     expect(
+      isMachineGoneError(
+        new Error(
+          "Fly Machines API GET /apps/agents/machines/mach_gone failed: 404 not found",
+        ),
+      ),
+    ).toBe(true);
+    expect(isMachineGoneError(new Error("volume not found"))).toBe(false);
+    expect(
       isRetryableWakeError(
         new Error("sessionio HTTP not ready at https://x/health: status 404"),
       ),
     ).toBe(true);
+    expect(isRetryableWakeError(new Error("volume not found"))).toBe(false);
     expect(
       isRetryableWakeError(
         new Error("OneCLI container-config unavailable — fail closed"),

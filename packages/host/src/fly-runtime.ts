@@ -81,11 +81,11 @@ function emitFlyStatus(
     }
     const publish = wakeDeps.publishRuntimeActivity;
     if (typeof publish === "function") {
-      void Promise.resolve(
-        publish(session, { phase, summary, state }),
-      ).catch(() => {
-        /* never fail wake on status */
-      });
+      void Promise.resolve(publish(session, { phase, summary, state })).catch(
+        () => {
+          /* never fail wake on status */
+        },
+      );
     }
   } catch {
     /* never fail wake on status */
@@ -300,7 +300,17 @@ function toMachineFiles(files: FlyGuestFile[]): Array<{
 /** True when Fly reports the Machine is missing (dashboard destroy / wrong app). */
 export function isMachineGoneError(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
-  return /\b404\b|not found|does not exist|no machine/i.test(msg);
+  // Do not treat volume/image misses as machine-gone — those are persistent
+  // misconfigs that should still write `.fly.wake-blocked`.
+  if (/\bvolume\b|\bimage\b/i.test(msg) && !/\bmachines?\//i.test(msg)) {
+    return false;
+  }
+  const missing = /\b(404|not found|does not exist)\b/i.test(msg);
+  return (
+    (/\bmachines\/[^/\s?]+\b/i.test(msg) && missing) ||
+    /\b(no machine|machine not found)\b/i.test(msg) ||
+    (/\bmachine\b/i.test(msg) && /\bdoes not exist\b/i.test(msg))
+  );
 }
 
 /**
@@ -763,13 +773,7 @@ async function doWakeFly(
       markStopped,
     });
     clearWakeFailure(session.id, sessionDirectory);
-    emitFlyStatus(
-      session,
-      ctx,
-      "ready",
-      "Agent runtime ready…",
-      "succeeded",
-    );
+    emitFlyStatus(session, ctx, "ready", "Agent runtime ready…", "succeeded");
     log.info(
       `fly wake started machine ${identity.machineId} for ${session.id}`,
     );
