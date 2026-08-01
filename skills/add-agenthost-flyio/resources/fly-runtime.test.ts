@@ -495,6 +495,42 @@ describe("fly-runtime", () => {
     );
   });
 
+  it("resets consecutive failure count when a retryable error intervenes", async () => {
+    const sessionId = "s5-mixed";
+    let failMode: "non-retryable" | "retryable" = "non-retryable";
+    setFlyWakeDeps({
+      resolveSessionDir: () => sessionDir,
+      waitHealth: async () => {
+        if (failMode === "retryable") {
+          throw new Error(
+            "sessionio HTTP not ready at https://x/health: status 404",
+          );
+        }
+      },
+      createClient: () => mockClient(),
+      applyOneCli: async () =>
+        failMode === "non-retryable"
+          ? { ok: false, env: {}, files: [] }
+          : { ok: true, env: {}, files: [] },
+    });
+    // One shy of the block threshold.
+    for (let i = 0; i < WAKE_FAIL_BLOCK_AFTER - 1; i += 1) {
+      await wakeFly({ id: sessionId, agent_group_id: "ag" });
+    }
+    expect(existsSync(path.join(sessionDir, FLY_WAKE_BLOCKED_FILENAME))).toBe(
+      false,
+    );
+    // Retryable blip clears the streak.
+    failMode = "retryable";
+    await wakeFly({ id: sessionId, agent_group_id: "ag" });
+    // A single fresh non-retryable failure must not trip the block.
+    failMode = "non-retryable";
+    await wakeFly({ id: sessionId, agent_group_id: "ag" });
+    expect(existsSync(path.join(sessionDir, FLY_WAKE_BLOCKED_FILENAME))).toBe(
+      false,
+    );
+  });
+
   it("writes wake-blocked after repeated non-retryable failures", async () => {
     setFlyWakeDeps({
       resolveSessionDir: () => sessionDir,
@@ -528,7 +564,7 @@ describe("fly-runtime", () => {
     expect(existsSync(blockedPath)).toBe(false);
   });
 
-  it("clears wake-blocked when the marker cannot be stated", async () => {
+  it("clears wake-blocked when the marker cannot be stat'ed", async () => {
     const blockedPath = path.join(sessionDir, FLY_WAKE_BLOCKED_FILENAME);
     writeFileSync(blockedPath, "blocked\n");
     const realStat = fs.statSync.bind(fs);

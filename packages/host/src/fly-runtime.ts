@@ -378,6 +378,8 @@ function recordWakeFailure(
   error: unknown,
 ): void {
   if (isRetryableWakeError(error)) {
+    // Retryable blips must not keep counting toward consecutive failures.
+    wakeFailures.delete(sessionId);
     log.warn(
       `fly wake failure for ${sessionId} is retryable — not writing ${FLY_WAKE_BLOCKED_FILENAME}`,
       { err: error instanceof Error ? error.message : String(error) },
