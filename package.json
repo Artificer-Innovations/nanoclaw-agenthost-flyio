@@ -50,7 +50,7 @@
     "node": ">=20"
   },
   "peerDependencies": {
-    "nanoclaw-agenthosts": "^0.1.0",
+    "nanoclaw-agenthosts": ">=0.1.0 <0.3.0",
     "nanoclaw-sessionio": "^0.1.0"
   },
   "peerDependenciesMeta": {
