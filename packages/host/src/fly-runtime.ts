@@ -29,6 +29,7 @@ import {
   FLY_RUNTIME_DIRNAME,
   FLY_RUNTIME_NAME,
   FLY_WAKE_BLOCKED_FILENAME,
+  WAKE_BLOCKED_TTL_MS,
   WAKE_FAIL_BLOCK_AFTER,
   isFlyRuntimeAllowed,
 } from "./fly-shared.js";
@@ -56,6 +57,53 @@ export interface FlyWakeDeps {
   resolveGroupFolder?: (agentGroupId: string) => string;
   /** Hosthook container env (agenttrace, etc.). Defaults to runContainerEnvContributors when available. */
   containerEnv?: (occupiedKeys: string[]) => Record<string, string>;
+  /**
+   * Fallback when the driver is invoked outside agenthosts `wakeContainer`
+   * (unit tests / direct embedders). Production wakes wire status via
+   * `ctx.onStatus` from `createWakeContext` — this path is usually unused.
+   */
+  publishRuntimeActivity?: (
+    session: SessionRef,
+    input: { phase: FlyRuntimePhase; summary: string; state?: string },
+  ) => void | Promise<void>;
+}
+
+/** Phases this driver emits — keep in sync with agenttrace `RuntimeActivityPhase`. */
+type FlyRuntimePhase =
+  | "preparing"
+  | "waiting_transport"
+  | "configuring"
+  | "provisioning_storage"
+  | "allocating"
+  | "updating_config"
+  | "starting"
+  | "ready"
+  | "failed"
+  | "blocked";
+
+function emitFlyStatus(
+  session: SessionRef,
+  ctx: WakeContext,
+  phase: FlyRuntimePhase,
+  summary: string,
+  state?: "started" | "progress" | "succeeded" | "failed",
+): void {
+  try {
+    if (typeof ctx.onStatus === "function") {
+      ctx.onStatus(phase, summary, state ? { state } : undefined);
+      return;
+    }
+    const publish = wakeDeps.publishRuntimeActivity;
+    if (typeof publish === "function") {
+      void Promise.resolve(publish(session, { phase, summary, state })).catch(
+        () => {
+          /* never fail wake on status */
+        },
+      );
+    }
+  } catch {
+    /* never fail wake on status */
+  }
 }
 
 interface TrackedMachine {
@@ -63,7 +111,12 @@ interface TrackedMachine {
   sessionDir: string;
   markStopped?: () => void;
   killing?: boolean;
+  /** Last successful Fly getMachine reconcile (warm-path TTL). */
+  lastReconciledAt?: number;
 }
+
+/** Skip repeated getMachine on warm wakes; orphan sweep uses force. */
+export const WARM_RECONCILE_TTL_MS = 45_000;
 
 const activeMachines = new Map<string, TrackedMachine>();
 const wakeFailures = new Map<string, number>();
@@ -263,14 +316,81 @@ function toMachineFiles(files: FlyGuestFile[]): Array<{
   }));
 }
 
-function recordWakeFailure(sessionId: string, sessionDirectory: string): void {
+/** True when Fly reports the Machine is missing (dashboard destroy / wrong app). */
+export function isMachineGoneError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  // Do not treat volume/image misses as machine-gone — those are persistent
+  // misconfigs that should still write `.fly.wake-blocked`.
+  if (/\bvolume\b|\bimage\b/i.test(msg) && !/\bmachines?\//i.test(msg)) {
+    return false;
+  }
+  const missing = /\b(404|not found|does not exist)\b/i.test(msg);
+  return (
+    (/\bmachines\/[^/\s?]+\b/i.test(msg) && missing) ||
+    /\b(no machine|machine not found)\b/i.test(msg) ||
+    (/\bmachine\b/i.test(msg) && /\bdoes not exist\b/i.test(msg))
+  );
+}
+
+/**
+ * Transient infra / transport failures should not write `.fly.wake-blocked`.
+ * Clickops (stop/destroy) and tunnel blips are expected to self-heal on retry.
+ *
+ * Taxonomy is best-effort substring matching of Fly / Node wording. Machine-gone
+ * is treated as retryable so recreate can run; WAKE_BLOCKED_TTL_MS still bounds
+ * non-retryable persistent failures. Intentionally no max-attempt cap here —
+ * operators clear stuck sessions via `.fly.wake-blocked` / teardown.
+ */
+export function isRetryableWakeError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return (
+    /sessionio|not ready|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|network|fetch failed|AbortError|timeout|429|502|503|504|ngrok|getting replaced|unable to start machine from current state/i.test(
+      msg,
+    ) || isMachineGoneError(error)
+  );
+}
+
+/**
+ * Best-effort volume delete + local identity clear before recreate.
+ * Dashboard destroy leaves the volume billed if we only unlink `.fly-machine.json`.
+ */
+async function clearIdentityForRecreate(
+  client: FlyMachinesClient,
+  sessionDirectory: string,
+  identity: FlyMachineIdentity,
+): Promise<void> {
+  try {
+    await client.deleteVolume(identity.volumeId);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/404|not found/i.test(msg)) {
+      log.warn(
+        `fly deleteVolume ${identity.volumeId} after machine ${identity.machineId} gone failed — continuing recreate: ${msg}`,
+      );
+    }
+  }
+  clearFlyIdentity(sessionDirectory);
+}
+
+function recordWakeFailure(
+  sessionId: string,
+  sessionDirectory: string,
+  error: unknown,
+): void {
+  if (isRetryableWakeError(error)) {
+    log.warn(
+      `fly wake failure for ${sessionId} is retryable — not writing ${FLY_WAKE_BLOCKED_FILENAME}`,
+      { err: error instanceof Error ? error.message : String(error) },
+    );
+    return;
+  }
   const count = (wakeFailures.get(sessionId) ?? 0) + 1;
   wakeFailures.set(sessionId, count);
   if (count >= WAKE_FAIL_BLOCK_AFTER) {
     fs.mkdirSync(sessionDirectory, { recursive: true });
     fs.writeFileSync(
       path.join(sessionDirectory, FLY_WAKE_BLOCKED_FILENAME),
-      `Blocked after ${count} consecutive wake failures\n`,
+      `Blocked after ${count} consecutive wake failures\nblockedAt=${new Date().toISOString()}\n`,
       { mode: 0o600 },
     );
   }
@@ -280,6 +400,82 @@ function clearWakeFailure(sessionId: string, sessionDirectory: string): void {
   wakeFailures.delete(sessionId);
   const blocked = path.join(sessionDirectory, FLY_WAKE_BLOCKED_FILENAME);
   if (fs.existsSync(blocked)) fs.unlinkSync(blocked);
+}
+
+/** Return false when the block file is absent or older than WAKE_BLOCKED_TTL_MS. */
+function isWakeBlocked(
+  sessionId: string,
+  sessionDirectory: string,
+  nowMs: number = Date.now(),
+): boolean {
+  const blocked = path.join(sessionDirectory, FLY_WAKE_BLOCKED_FILENAME);
+  if (!fs.existsSync(blocked)) return false;
+  try {
+    const age = nowMs - fs.statSync(blocked).mtimeMs;
+    if (age >= WAKE_BLOCKED_TTL_MS) {
+      log.info(
+        `fly wake-blocked expired for ${sessionId} after ${Math.round(age / 1000)}s — clearing`,
+      );
+      clearWakeFailure(sessionId, sessionDirectory);
+      return false;
+    }
+  } catch {
+    clearWakeFailure(sessionId, sessionDirectory);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Dashboard stop/destroy can leave activeMachines lying.
+ * Returns "live" when Fly still shows started/starting; "stale" after dropping the map entry.
+ * Transient probe errors trust the map (avoid flapping on API blips).
+ */
+async function reconcileTrackedMachine(
+  sessionId: string,
+  tracked: TrackedMachine,
+  opts: { force?: boolean } = {},
+): Promise<"live" | "stale"> {
+  const now = Date.now();
+  if (
+    !opts.force &&
+    tracked.lastReconciledAt != null &&
+    now - tracked.lastReconciledAt < WARM_RECONCILE_TTL_MS
+  ) {
+    return "live";
+  }
+  try {
+    const client = getClient(process.env);
+    const remote = await client.getMachine(tracked.machineId);
+    const state = (remote.state ?? "").toLowerCase();
+    if (state === "started" || state === "starting") {
+      tracked.lastReconciledAt = now;
+      return "live";
+    }
+    log.info(
+      `fly tracked machine ${tracked.machineId} for ${sessionId} is ${state || "unknown"} — will re-wake`,
+    );
+    activeMachines.delete(sessionId);
+    markContainerStopped(sessionId);
+    return "stale";
+  } catch (error) {
+    if (isMachineGoneError(error)) {
+      log.info(
+        `fly tracked machine ${tracked.machineId} for ${sessionId} is gone — will re-wake`,
+      );
+      activeMachines.delete(sessionId);
+      markContainerStopped(sessionId);
+      return "stale";
+    }
+    log.warn(
+      `fly reconcile getMachine ${tracked.machineId} failed — trusting in-memory running: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    // Trust map on blips — still stamp TTL so we don't hammer Fly every wake.
+    tracked.lastReconciledAt = now;
+    return "live";
+  }
 }
 
 function requireFlyConfig(env: NodeJS.ProcessEnv): {
@@ -311,6 +507,7 @@ async function ensureIdentityAndStart(
   session: SessionRef,
   sessionDirectory: string,
   env: NodeJS.ProcessEnv,
+  ctx: WakeContext,
 ): Promise<FlyMachineIdentity> {
   const client = getClient(env);
   const { image, region, volumeSizeGb, gatewayHost } = requireFlyConfig(env);
@@ -318,12 +515,19 @@ async function ensureIdentityAndStart(
   const applyOneCli = wakeDeps.applyOneCli ?? applyFlyOneCli;
   const waitHealth = wakeDeps.waitHealth ?? waitForSessionioHealth;
 
+  emitFlyStatus(
+    session,
+    ctx,
+    "waiting_transport",
+    "Waiting for session transport…",
+  );
   const sessionioBase = resolveFlySessionioBaseUrl(env);
   await waitHealth({
     baseUrl: sessionioBase,
     token: env.SESSIONIO_HTTP_TOKEN,
   });
 
+  emitFlyStatus(session, ctx, "configuring", "Preparing credentials…");
   const onecli = await applyOneCli({
     agentIdentifier: session.agent_group_id,
     agentName: resolveGroupFolder(session.agent_group_id),
@@ -376,12 +580,72 @@ async function ensureIdentityAndStart(
   };
 
   let identity = readFlyIdentity(sessionDirectory);
+
+  // Prefer current FLY_AGENT_IMAGE so rebuilds take effect on next wake.
+  let prevImage = identity?.image;
+  if (identity) {
+    identity = { ...identity, image };
+    writeFlyIdentity(sessionDirectory, identity);
+  }
+
+  // Single getMachine probe: drive config update, or clear identity on clickops destroy.
+  let machineState: string | undefined;
+  let remoteImage: string | undefined;
+  let gotRemote = false;
+  let remoteEnv: Record<string, string> = {};
+  if (identity) {
+    const existing = identity;
+    const machineId = existing.machineId;
+    try {
+      const remote = await client.getMachine(machineId);
+      const state = (remote.state ?? "").toLowerCase();
+      if (state === "destroyed" || state === "destroying") {
+        log.warn(
+          `fly machine ${machineId} is ${state} — clearing identity for recreate`,
+        );
+        await clearIdentityForRecreate(client, sessionDirectory, existing);
+        identity = null;
+      } else {
+        gotRemote = true;
+        machineState = remote.state;
+        const cfg = remote.config ?? {};
+        remoteImage = typeof cfg.image === "string" ? cfg.image : prevImage;
+        if (cfg.env && typeof cfg.env === "object") {
+          remoteEnv = cfg.env as Record<string, string>;
+        }
+      }
+    } catch (err) {
+      if (isMachineGoneError(err)) {
+        log.warn(
+          `fly machine ${machineId} gone — clearing identity for recreate`,
+        );
+        await clearIdentityForRecreate(client, sessionDirectory, existing);
+        identity = null;
+      } else {
+        // Transient probe failure — do NOT update (blind update restarts a
+        // healthy Machine and can drop at-most-once HTTP inbound).
+        log.warn(
+          `fly getMachine ${machineId} failed — skipping config update: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+  }
+
   if (!identity) {
+    emitFlyStatus(
+      session,
+      ctx,
+      "provisioning_storage",
+      "Provisioning storage…",
+    );
     const volume = await client.createVolume({
       name: volumeNameFor(session),
       region,
       sizeGb: volumeSizeGb,
     });
+    emitFlyStatus(session, ctx, "allocating", "Creating machine…");
     const machine = await client.createMachine({
       name: machineNameFor(session),
       region,
@@ -401,42 +665,12 @@ async function ensureIdentityAndStart(
     };
     writeFlyIdentity(sessionDirectory, identity);
   } else {
-    // Prefer current FLY_AGENT_IMAGE so rebuilds take effect on next wake.
-    const prevImage = identity.image;
-    identity = { ...identity, image };
-    writeFlyIdentity(sessionDirectory, identity);
-
     // Fly applies config updates by restarting the Machine (SIGINT). Doing that
     // on every chat message kills mid-turn work and feels like a cold start.
     // Only POST an update when the Machine is not already running, or the
-    // pinned image changed.
-    //
-    // If getMachine fails, do NOT update — a blind update restarts a healthy
-    // Machine and can drop at-most-once HTTP inbound that was already taken.
-    let machineState: string | undefined;
-    let remoteImage: string | undefined;
-    let gotRemote = false;
-    let remoteEnv: Record<string, string> = {};
-    try {
-      const remote = await client.getMachine(identity.machineId);
-      gotRemote = true;
-      machineState = remote.state;
-      const cfg = remote.config ?? {};
-      remoteImage = typeof cfg.image === "string" ? cfg.image : prevImage;
-      if (cfg.env && typeof cfg.env === "object") {
-        remoteEnv = cfg.env as Record<string, string>;
-      }
-    } catch (err) {
-      log.warn(
-        `fly getMachine ${identity.machineId} failed — skipping config update: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
+    // pinned image / hosthook env / Claude persist path changed.
     const running = machineState === "started" || machineState === "starting";
     const imageChanged = Boolean(image) && image !== remoteImage;
-    // Push stable hosthook env (e.g. AGENTTRACE_*) without comparing OneCLI
-    // tokens, which can change every wake and would restart every message.
     const needsHosthookEnv = Object.entries(hosthookEnv).some(
       ([key, value]) => remoteEnv[key] !== value,
     );
@@ -446,6 +680,12 @@ async function ensureIdentityAndStart(
       gotRemote &&
       (!running || imageChanged || needsHosthookEnv || needsClaudePersist)
     ) {
+      emitFlyStatus(
+        session,
+        ctx,
+        "updating_config",
+        "Updating machine config…",
+      );
       await client.updateMachineEnv(identity.machineId, {
         image,
         env: machineEnv,
@@ -462,6 +702,7 @@ async function ensureIdentityAndStart(
   fs.mkdirSync(path.join(sessionDirectory, FLY_RUNTIME_DIRNAME), {
     recursive: true,
   });
+  emitFlyStatus(session, ctx, "starting", "Starting machine…");
   await startFlyMachineWhenReady(client, identity.machineId);
   return identity;
 }
@@ -493,7 +734,9 @@ export async function startFlyMachineWhenReady(
       if (
         /getting replaced|unable to start machine from current state/i.test(msg)
       ) {
-        await new Promise((r) => setTimeout(r, sleepMs));
+        // Jitter avoids synchronized retry storms after mass config-update replace.
+        const delay = sleepMs + Math.floor(Math.random() * 250);
+        await new Promise((r) => setTimeout(r, delay));
         continue;
       }
       throw error;
@@ -506,6 +749,22 @@ export async function startFlyMachineWhenReady(
       );
 }
 
+/**
+ * If we already track a live Machine, confirm with Fly and return true.
+ * Shared by wakeFly (warm path) and doWakeFly (post-race re-check).
+ */
+async function tryWarmLiveReturn(sessionId: string): Promise<boolean> {
+  const existing = activeMachines.get(sessionId);
+  if (!existing || existing.killing) return false;
+  // Dashboard stop leaves the map lying — verify Fly before trusting it.
+  const status = await reconcileTrackedMachine(sessionId, existing);
+  if (status !== "live") return false;
+  // Keep DB in sync — delivery's 1s poll keys off container_status, and an
+  // early return used to leave a stale `stopped` row (60s sweep only).
+  markContainerRunning(sessionId);
+  return true;
+}
+
 export async function wakeFly(
   session: SessionRef,
   ctx: WakeContext = {},
@@ -515,24 +774,20 @@ export async function wakeFly(
     log.warn(
       `fly wake refused for ${session.id}: NANOCLAW_ALLOW_FLY_RUNTIME not set`,
     );
+    emitFlyStatus(session, ctx, "blocked", "Agent runtime blocked", "failed");
     return false;
   }
 
   const sessionDirectory = resolveSessionDirectory(session);
-  if (fs.existsSync(path.join(sessionDirectory, FLY_WAKE_BLOCKED_FILENAME))) {
+  if (isWakeBlocked(session.id, sessionDirectory)) {
     log.warn(
       `fly wake blocked for ${session.id}: see ${FLY_WAKE_BLOCKED_FILENAME}`,
     );
+    emitFlyStatus(session, ctx, "blocked", "Agent runtime blocked", "failed");
     return false;
   }
 
-  const existing = activeMachines.get(session.id);
-  if (existing && !existing.killing) {
-    // Keep DB in sync — delivery's 1s poll keys off container_status, and an
-    // early return used to leave a stale `stopped` row (60s sweep only).
-    markContainerRunning(session.id);
-    return true;
-  }
+  if (await tryWarmLiveReturn(session.id)) return true;
 
   const inflight = wakeInflight.get(session.id);
   if (inflight) return inflight;
@@ -550,14 +805,12 @@ async function doWakeFly(
   ctx: WakeContext,
   env: NodeJS.ProcessEnv,
 ): Promise<boolean> {
-  // Re-check after waiting on another wake / before long ensure.
-  /* v8 ignore next 4 — coalesced wakes share one doWakeFly; map is empty at entry */
-  const existing = activeMachines.get(session.id);
-  if (existing && !existing.killing) {
-    return true;
-  }
+  // Re-check after a raced peer wake populated activeMachines.
+  /* v8 ignore next -- narrow race with concurrent doWakeFly; warm path covered via wakeFly */
+  if (await tryWarmLiveReturn(session.id)) return true;
 
   try {
+    emitFlyStatus(session, ctx, "preparing", "Waking agent…");
     const transportHint =
       (typeof ctx.transportName === "string" && ctx.transportName.trim()) ||
       (env.SESSIONIO_TRANSPORT ?? "").trim();
@@ -574,6 +827,7 @@ async function doWakeFly(
       session,
       sessionDirectory,
       env,
+      ctx,
     );
 
     const markStopped = () => markContainerStopped(session.id);
@@ -584,6 +838,7 @@ async function doWakeFly(
       markStopped,
     });
     clearWakeFailure(session.id, sessionDirectory);
+    emitFlyStatus(session, ctx, "ready", "Agent runtime ready…", "succeeded");
     log.info(
       `fly wake started machine ${identity.machineId} for ${session.id}`,
     );
@@ -595,7 +850,14 @@ async function doWakeFly(
         error instanceof Error ? error.message : String(error)
       }`,
     );
-    recordWakeFailure(session.id, sessionDirectory);
+    emitFlyStatus(
+      session,
+      ctx,
+      "failed",
+      "Couldn't start agent runtime",
+      "failed",
+    );
+    recordWakeFailure(session.id, sessionDirectory, error);
     return false;
   }
 }
@@ -651,6 +913,14 @@ export async function cleanupFlyOrphans(): Promise<void> {
     client = getClient(process.env);
   } catch {
     return;
+  }
+
+  // Drop map entries for Machines stopped/destroyed outside NanoClaw (dashboard).
+  // Serial getMachine per entry — expected cardinality is active sessions on this
+  // host (typically tens, not fleet-wide). force=true bypasses warm-path TTL.
+  for (const [sessionId, tracked] of [...activeMachines.entries()]) {
+    if (tracked.killing) continue;
+    await reconcileTrackedMachine(sessionId, tracked, { force: true });
   }
 
   for (const group of fs.readdirSync(sessionsRoot, { withFileTypes: true })) {

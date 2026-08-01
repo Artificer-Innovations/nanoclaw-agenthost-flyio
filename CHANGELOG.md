@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+### Minor Changes
+
+- Emit phase-rich runtime status during Fly wake via `ctx.onStatus` (preparing → transport/config/provision/start → ready/failed). Harden wake against dashboard clickops: TTL-gated warm reconcile, recreate identity with best-effort volume delete on destroy/404, skip `.fly.wake-blocked` for retryable errors, and auto-expire wake-blocked after 15 minutes.
+
 ## 0.1.1
 
 ### Patch Changes

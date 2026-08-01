@@ -9,6 +9,8 @@ export const FLY_IDENTITY_FILENAME = ".fly-machine.json";
 export const FLY_RUNTIME_DIRNAME = ".fly-runtime";
 export const FLY_WAKE_BLOCKED_FILENAME = ".fly.wake-blocked";
 export const WAKE_FAIL_BLOCK_AFTER = 5;
+/** Auto-clear `.fly.wake-blocked` after this age so clickops / tunnel blips self-heal. */
+export const WAKE_BLOCKED_TTL_MS = 15 * 60 * 1000;
 
 /** Default Machines API base (Fly Machines HTTP API). */
 export const FLY_MACHINES_API_BASE = "https://api.machines.dev/v1";
