@@ -340,7 +340,7 @@ fly logs -a "$FLY_APP_AGENTS" -i <machine-id>
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | `platform not found: linux/amd64` | Image built for arm64 | Rebuild with `linux/amd64` (`./container/build-fly.sh`) |
-| Wake no-ops / “wake blocked” | Five failed wakes wrote `.fly.wake-blocked` | Fix root cause, delete the file under the session dir, retry |
+| Wake no-ops / “wake blocked” | Five **non-retryable** wake failures wrote `.fly.wake-blocked` (transport/ngrok blips do not). File also auto-expires after 15m. | Fix root cause; wait for TTL or delete the file under the session dir, then retry |
 | Mailbox health never OK | `FLY_SESSIONIO_BASE_URL` wrong, tunnel down, ngrok interstitial | Curl the public `/health` from outside your LAN; prefer clean tunnel / skip interstitial |
 | **421** / wrong Host on provider calls | OneCLI exposed via `ngrok http` | Switch to **TCP** tunnel; `GATEWAY_BASE_URL=http://host:port` |
 | Proxy to `host.docker.internal` | `GATEWAY_BASE_URL` unset | Set public/WG proxy URL; restart host |

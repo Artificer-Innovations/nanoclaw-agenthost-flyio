@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Minor Changes
+
+- Emit phase-rich runtime status during Fly wake via `ctx.onStatus` (preparing → transport/config/provision/start → ready/failed), with optional `wakeDeps.publishRuntimeActivity` fallback.
+
+- Harden wake against Fly dashboard clickops: reconcile tracked Machines before warm early-return, recreate identity when a Machine is destroyed/404, skip `.fly.wake-blocked` for retryable transport errors, and auto-expire wake-blocked after 15 minutes.
+
 ## 0.1.1
 
 ### Patch Changes
