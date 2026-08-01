@@ -8,7 +8,14 @@ export interface SessionRef {
   agent_group_id: string;
 }
 
+export type RuntimeStatusFn = (
+  phase: string,
+  summary: string,
+  extra?: { state?: "started" | "progress" | "succeeded" | "failed" },
+) => void;
+
 export interface WakeContext {
+  onStatus?: RuntimeStatusFn;
   [key: string]: unknown;
 }
 
