@@ -26,6 +26,7 @@ import {
   startFlyMachineWhenReady,
   wakeFly,
   writeFlyIdentity,
+  WARM_RECONCILE_TTL_MS,
 } from "./fly-runtime.js";
 import type { FlyMachinesClient } from "./fly-machines.js";
 
@@ -46,6 +47,8 @@ function mockClient(
       region: "iad",
       size_gb: 3,
     }),
+    deleteVolume: async () => {},
+    deleteMachine: async () => {},
     createMachine: async () => ({ id: "mach_1", state: "created" }),
     getMachine: async () => ({ id: "mach_1", state: "stopped" }),
     startMachine: async () => {},
@@ -576,9 +579,16 @@ describe("fly-runtime", () => {
     // Simulate Fly dashboard stop while host still thinks it's running.
     state = "stopped";
     start.mockClear();
-    expect(await wakeFly({ id: "s-clickops", agent_group_id: "ag" })).toBe(
-      true,
-    );
+    // Warm reconcile is TTL-gated — advance past it so clickops is observed.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.advanceTimersByTime(WARM_RECONCILE_TTL_MS + 1);
+      expect(await wakeFly({ id: "s-clickops", agent_group_id: "ag" })).toBe(
+        true,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
     expect(start).toHaveBeenCalled();
     expect(isFlyRunning("s-clickops")).toBe(true);
   });
@@ -611,7 +621,13 @@ describe("fly-runtime", () => {
     expect(await wakeFly({ id: "s-gone", agent_group_id: "ag" })).toBe(true);
     deadIds.add("mach_1");
     createMachine.mockClear();
-    expect(await wakeFly({ id: "s-gone", agent_group_id: "ag" })).toBe(true);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.advanceTimersByTime(WARM_RECONCILE_TTL_MS + 1);
+      expect(await wakeFly({ id: "s-gone", agent_group_id: "ag" })).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(createMachine).toHaveBeenCalled();
     expect(isFlyRunning("s-gone")).toBe(true);
   });
@@ -639,9 +655,39 @@ describe("fly-runtime", () => {
     expect(await wakeFly({ id: "s-blip", agent_group_id: "ag" })).toBe(true);
     blowUp = true;
     createMachine.mockClear();
-    expect(await wakeFly({ id: "s-blip", agent_group_id: "ag" })).toBe(true);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.advanceTimersByTime(WARM_RECONCILE_TTL_MS + 1);
+      expect(await wakeFly({ id: "s-blip", agent_group_id: "ag" })).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(createMachine).not.toHaveBeenCalled();
     expect(isFlyRunning("s-blip")).toBe(true);
+  });
+
+  it("skips warm getMachine within reconcile TTL", async () => {
+    const getMachine = vi.fn(async () => ({
+      id: "mach_1",
+      state: "started",
+    }));
+    setFlyWakeDeps({
+      resolveSessionDir: () => sessionDir,
+      resolveGroupFolder: () => "folder",
+      createClient: () => mockClient({ getMachine }),
+      applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
+      waitHealth: async () => {},
+    });
+    expect(await wakeFly({ id: "s-ttl", agent_group_id: "ag" })).toBe(true);
+    // Cold path already probed; stamp a warm reconcile then ensure a second
+    // warm wake within TTL does not call Fly again.
+    getMachine.mockClear();
+    expect(await wakeFly({ id: "s-ttl", agent_group_id: "ag" })).toBe(true);
+    // First warm after cold still probes once (no lastReconciledAt yet).
+    expect(getMachine).toHaveBeenCalledTimes(1);
+    getMachine.mockClear();
+    expect(await wakeFly({ id: "s-ttl", agent_group_id: "ag" })).toBe(true);
+    expect(getMachine).not.toHaveBeenCalled();
   });
 
   it("recreates identity when Fly machine was destroyed", async () => {
@@ -656,6 +702,7 @@ describe("fly-runtime", () => {
       id: "mach_new",
       state: "created",
     }));
+    const deleteVolume = vi.fn(async () => {});
     setFlyWakeDeps({
       resolveSessionDir: () => sessionDir,
       resolveGroupFolder: () => "folder",
@@ -670,13 +717,52 @@ describe("fly-runtime", () => {
             return { id, state: "started" };
           },
           createMachine,
+          deleteVolume,
         }),
       applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
       waitHealth: async () => {},
     });
     expect(await wakeFly({ id: "s-destroy", agent_group_id: "ag" })).toBe(true);
+    expect(deleteVolume).toHaveBeenCalledWith("vol_old");
     expect(createMachine).toHaveBeenCalled();
     expect(isFlyRunning("s-destroy")).toBe(true);
+  });
+
+  it("continues recreate when deleteVolume fails non-404", async () => {
+    writeFlyIdentity(sessionDir, {
+      machineId: "mach_gone2",
+      volumeId: "vol_stuck",
+      app: "agents",
+      region: "iad",
+      image: "registry.fly.io/agent:old",
+    });
+    const createMachine = vi.fn(async () => ({
+      id: "mach_new2",
+      state: "created",
+    }));
+    setFlyWakeDeps({
+      resolveSessionDir: () => sessionDir,
+      resolveGroupFolder: () => "folder",
+      createClient: () =>
+        mockClient({
+          getMachine: async (id: string) => {
+            if (id === "mach_gone2") {
+              throw new Error(
+                "Fly Machines API GET /apps/agents/machines/mach_gone2 failed: 404 not found",
+              );
+            }
+            return { id, state: "started" };
+          },
+          deleteVolume: async () => {
+            throw new Error("volume still attached");
+          },
+          createMachine,
+        }),
+      applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
+      waitHealth: async () => {},
+    });
+    expect(await wakeFly({ id: "s-volfail", agent_group_id: "ag" })).toBe(true);
+    expect(createMachine).toHaveBeenCalled();
   });
 
   it("clears identity when getMachine reports destroyed/destroying state", async () => {
@@ -695,6 +781,7 @@ describe("fly-runtime", () => {
         id: `mach_new_${state}`,
         state: "created",
       }));
+      const deleteVolume = vi.fn(async () => {});
       setFlyWakeDeps({
         resolveSessionDir: () => sessionDir,
         resolveGroupFolder: () => "folder",
@@ -707,6 +794,7 @@ describe("fly-runtime", () => {
               return { id, state: "started" };
             },
             createMachine,
+            deleteVolume,
           }),
         applyOneCli: async () => ({ ok: true, env: {}, files: [] }),
         waitHealth: async () => {},
@@ -714,6 +802,7 @@ describe("fly-runtime", () => {
       expect(await wakeFly({ id: `s-${state}`, agent_group_id: "ag" })).toBe(
         true,
       );
+      expect(deleteVolume).toHaveBeenCalledWith("vol_old");
       expect(createMachine).toHaveBeenCalled();
     }
   });
