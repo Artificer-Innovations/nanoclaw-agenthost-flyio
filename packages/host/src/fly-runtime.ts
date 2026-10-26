@@ -289,7 +289,7 @@ function rewriteWebchatMdForFly(body: string, env: NodeJS.ProcessEnv): string {
   let next = body;
   /* v8 ignore start */
   if (apiBase) {
-  /* v8 ignore stop */
+    /* v8 ignore stop */
     next = next
       .replace(
         /Configured apiBase:\s*`[^`]+`/g,
@@ -369,7 +369,7 @@ async function clearIdentityForRecreate(
     /* v8 ignore start */
     const msg = err instanceof Error ? err.message : String(err);
     if (!/404|not found/i.test(msg)) {
-    /* v8 ignore stop */
+      /* v8 ignore stop */
       log.warn(
         `fly deleteVolume ${identity.volumeId} after machine ${identity.machineId} gone failed — continuing recreate: ${msg}`,
       );
@@ -577,7 +577,7 @@ async function ensureIdentityAndStart(
       const mod = await import("./hosthooks.js");
       /* v8 ignore start */
       if (typeof mod.runContainerEnvContributors === "function") {
-      /* v8 ignore stop */
+        /* v8 ignore stop */
         hosthookEnv = mod.runContainerEnvContributors(Object.keys(baseEnv));
       }
       /* v8 ignore next 3 — missing hosthooks module on bare package installs */
