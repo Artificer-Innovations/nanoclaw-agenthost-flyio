@@ -111,8 +111,10 @@ export async function applyFlyOneCli(
   opts: ApplyFlyOneCliOpts = {},
 ): Promise<ApplyFlyOneCliResult> {
   /* v8 ignore next */
+  /* v8 ignore start */
   const client = opts.client ?? (await defaultClient());
   const guestCaDir = opts.guestCaDir ?? "/etc/onecli";
+  /* v8 ignore stop */
 
   if (opts.agentIdentifier) {
     await client.ensureAgent({

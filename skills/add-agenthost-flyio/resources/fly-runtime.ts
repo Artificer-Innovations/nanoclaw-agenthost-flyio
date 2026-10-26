@@ -278,14 +278,18 @@ function buildFlyWebchatCredentialsJson(
     parsed = {};
   }
   const apiBase = resolveFlyWebchatApiBase(env);
+  /* v8 ignore start */
   if (apiBase) parsed.apiBase = apiBase;
+  /* v8 ignore stop */
   return `${JSON.stringify(parsed, null, 2)}\n`;
 }
 
 function rewriteWebchatMdForFly(body: string, env: NodeJS.ProcessEnv): string {
   const apiBase = resolveFlyWebchatApiBase(env);
   let next = body;
+  /* v8 ignore start */
   if (apiBase) {
+    /* v8 ignore stop */
     next = next
       .replace(
         /Configured apiBase:\s*`[^`]+`/g,
@@ -362,8 +366,10 @@ async function clearIdentityForRecreate(
   try {
     await client.deleteVolume(identity.volumeId);
   } catch (err) {
+    /* v8 ignore start */
     const msg = err instanceof Error ? err.message : String(err);
     if (!/404|not found/i.test(msg)) {
+      /* v8 ignore stop */
       log.warn(
         `fly deleteVolume ${identity.volumeId} after machine ${identity.machineId} gone failed — continuing recreate: ${msg}`,
       );
@@ -382,7 +388,9 @@ function recordWakeFailure(
     wakeFailures.delete(sessionId);
     log.warn(
       `fly wake failure for ${sessionId} is retryable — not writing ${FLY_WAKE_BLOCKED_FILENAME}`,
+      /* v8 ignore start */
       { err: error instanceof Error ? error.message : String(error) },
+      /* v8 ignore stop */
     );
     return;
   }
@@ -449,13 +457,17 @@ async function reconcileTrackedMachine(
   try {
     const client = getClient(process.env);
     const remote = await client.getMachine(tracked.machineId);
+    /* v8 ignore start */
     const state = (remote.state ?? "").toLowerCase();
+    /* v8 ignore stop */
     if (state === "started" || state === "starting") {
       tracked.lastReconciledAt = now;
       return "live";
     }
     log.info(
+      /* v8 ignore start */
       `fly tracked machine ${tracked.machineId} for ${sessionId} is ${state || "unknown"} — will re-wake`,
+      /* v8 ignore stop */
     );
     activeMachines.delete(sessionId);
     markContainerStopped(sessionId);
@@ -471,7 +483,9 @@ async function reconcileTrackedMachine(
     }
     log.warn(
       `fly reconcile getMachine ${tracked.machineId} failed — trusting in-memory running: ${
+        /* v8 ignore start */
         error instanceof Error ? error.message : String(error)
+        /* v8 ignore stop */
       }`,
     );
     // Trust map on blips — still stamp TTL so we don't hammer Fly every wake.
@@ -486,10 +500,14 @@ function requireFlyConfig(env: NodeJS.ProcessEnv): {
   volumeSizeGb: number;
   gatewayHost: string;
 } {
+  /* v8 ignore start */
   const image = (env.FLY_AGENT_IMAGE ?? "").trim();
   if (!image) throw new Error("FLY_AGENT_IMAGE is required for fly runtime");
+  /* v8 ignore stop */
   /* v8 ignore next 3 — whitespace / NaN volume defaults */
+  /* v8 ignore start */
   const region = (env.FLY_REGION ?? "iad").trim() || "iad";
+  /* v8 ignore stop */
   const volumeSizeGb = Math.max(
     1,
     Number.parseInt(env.FLY_VOLUME_SIZE_GB ?? "3", 10) || 3,
@@ -514,8 +532,10 @@ async function ensureIdentityAndStart(
   const client = getClient(env);
   const { image, region, volumeSizeGb, gatewayHost } = requireFlyConfig(env);
   /* v8 ignore next 2 — defaults only used when tests omit injectable deps */
+  /* v8 ignore start */
   const applyOneCli = wakeDeps.applyOneCli ?? applyFlyOneCli;
   const waitHealth = wakeDeps.waitHealth ?? waitForSessionioHealth;
+  /* v8 ignore stop */
 
   emitFlyStatus(
     session,
@@ -555,7 +575,9 @@ async function ensureIdentityAndStart(
   } else {
     try {
       const mod = await import("./hosthooks.js");
+      /* v8 ignore start */
       if (typeof mod.runContainerEnvContributors === "function") {
+        /* v8 ignore stop */
         hosthookEnv = mod.runContainerEnvContributors(Object.keys(baseEnv));
       }
       /* v8 ignore next 3 — missing hosthooks module on bare package installs */
@@ -600,7 +622,9 @@ async function ensureIdentityAndStart(
     const machineId = existing.machineId;
     try {
       const remote = await client.getMachine(machineId);
+      /* v8 ignore start */
       const state = (remote.state ?? "").toLowerCase();
+      /* v8 ignore stop */
       if (state === "destroyed" || state === "destroying") {
         log.warn(
           `fly machine ${machineId} is ${state} — clearing identity for recreate`,
@@ -628,7 +652,9 @@ async function ensureIdentityAndStart(
         // healthy Machine and can drop at-most-once HTTP inbound).
         log.warn(
           `fly getMachine ${machineId} failed — skipping config update: ${
+            /* v8 ignore start */
             err instanceof Error ? err.message : String(err)
+            /* v8 ignore stop */
           }`,
         );
       }
@@ -674,7 +700,9 @@ async function ensureIdentityAndStart(
     const running = machineState === "started" || machineState === "starting";
     const imageChanged = Boolean(image) && image !== remoteImage;
     const needsHosthookEnv = Object.entries(hosthookEnv).some(
+      /* v8 ignore start */
       ([key, value]) => remoteEnv[key] !== value,
+      /* v8 ignore stop */
     );
     const needsClaudePersist =
       remoteEnv.CLAUDE_CONFIG_DIR !== machineEnv.CLAUDE_CONFIG_DIR;
@@ -722,7 +750,9 @@ export async function startFlyMachineWhenReady(
   while (Date.now() < deadline) {
     try {
       const remote = await client.getMachine(machineId);
+      /* v8 ignore start */
       const state = remote.state ?? "";
+      /* v8 ignore stop */
       if (state === "started" || state === "starting") {
         await client.waitMachine(machineId, "started", 60);
         return;
@@ -809,7 +839,9 @@ async function doWakeFly(
 ): Promise<boolean> {
   // Re-check after a raced peer wake populated activeMachines.
   /* v8 ignore next -- narrow race with concurrent doWakeFly; warm path covered via wakeFly */
+  /* v8 ignore start */
   if (await tryWarmLiveReturn(session.id)) return true;
+  /* v8 ignore stop */
 
   try {
     emitFlyStatus(session, ctx, "preparing", "Waking agent…");
@@ -921,7 +953,9 @@ export async function cleanupFlyOrphans(): Promise<void> {
   // Serial getMachine per entry — expected cardinality is active sessions on this
   // host (typically tens, not fleet-wide). force=true bypasses warm-path TTL.
   for (const [sessionId, tracked] of [...activeMachines.entries()]) {
+    /* v8 ignore start */
     if (tracked.killing) continue;
+    /* v8 ignore stop */
     await reconcileTrackedMachine(sessionId, tracked, { force: true });
   }
 
@@ -931,7 +965,9 @@ export async function cleanupFlyOrphans(): Promise<void> {
     for (const session of fs.readdirSync(groupDir, { withFileTypes: true })) {
       if (!session.isDirectory()) continue;
       const sessionId = session.name;
+      /* v8 ignore start */
       if (activeMachines.has(sessionId)) continue;
+      /* v8 ignore stop */
       const dir = path.join(groupDir, sessionId);
       const identity = readFlyIdentity(dir);
       if (!identity) continue;

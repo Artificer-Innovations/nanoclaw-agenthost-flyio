@@ -79,6 +79,18 @@ describe("install", () => {
     );
   });
 
+  it("removes an empty fly runner directory and keeps a non-empty one", () => {
+    root = fixtureRoot();
+    const flyDir = path.join(root, "container/agent-runner/src/fly");
+    mkdirSync(flyDir, { recursive: true });
+    writeFileSync(path.join(flyDir, "keep.txt"), "x");
+    runUninstall(root);
+    expect(existsSync(flyDir)).toBe(true);
+    rmSync(path.join(flyDir, "keep.txt"));
+    runUninstall(root);
+    expect(existsSync(flyDir)).toBe(false);
+  });
+
   it("verify reports missing peers and files", () => {
     root = mkdtempSync(path.join(tmpdir(), "fly-verify-"));
     mkdirSync(path.join(root, "src"), { recursive: true });
