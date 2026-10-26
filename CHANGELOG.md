@@ -6,7 +6,6 @@
 
 - Compatible with nanoclaw-sessionio install on NanoClaw 2026.10.1-rc.2.
 
-
 ## 0.2.0
 
 ### Minor Changes
