@@ -72,6 +72,7 @@ describe("runTeardown", () => {
     const group = path.join(sessions, "ag");
     mkdirSync(group, { recursive: true });
     writeFileSync(path.join(group, "not-a-session.txt"), "x\n");
+    mkdirSync(path.join(group, "empty-session"));
     const result = await runTeardown(dir, {
       fetchImpl: async () => new Response(null, { status: 204 }),
     });
@@ -105,6 +106,30 @@ describe("runTeardown", () => {
     await expect(
       runTeardown(dir, { env: { FLY_API_TOKEN: "t" } }),
     ).rejects.toThrow(/FLY_APP_AGENTS/);
+  });
+
+  it("uses an empty body when Fly DELETE text() rejects", async () => {
+    dir = mkdtempSync(path.join(tmpdir(), "ahf-td-text-"));
+    writeFileSync(
+      path.join(dir, ".env"),
+      "FLY_API_TOKEN=tok\nFLY_APP_AGENTS=agents\n",
+    );
+    const sessionDir = path.join(dir, "data", "v2-sessions", "ag", "sess");
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      path.join(sessionDir, ".fly-machine.json"),
+      JSON.stringify({ machineId: "m1", volumeId: "v1" }),
+    );
+    const result = await runTeardown(dir, {
+      fetchImpl: (async () =>
+        ({
+          status: 500,
+          ok: false,
+          text: () => Promise.reject(new Error("unread")),
+        }) as Response) as typeof fetch,
+    });
+    expect(result.sessions[0]?.error).toContain("500");
+    expect(result.errors).toBe(1);
   });
 
   it("records invalid identity and API errors", async () => {
