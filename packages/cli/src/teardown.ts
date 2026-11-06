@@ -180,8 +180,9 @@ export async function runTeardown(
       fs.unlinkSync(path.join(sessionDir, IDENTITY));
       row.identityCleared = true;
     } catch (error) {
-      /* v8 ignore next — non-Error throws are normalized for the summary line */
+      /* v8 ignore start — non-Error throws are normalized for the summary line */
       row.error = error instanceof Error ? error.message : String(error);
+      /* v8 ignore stop */
     }
     sessions.push(row);
   }

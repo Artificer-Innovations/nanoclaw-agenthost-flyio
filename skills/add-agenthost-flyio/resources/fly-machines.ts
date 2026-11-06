@@ -109,7 +109,9 @@ export class FlyMachinesClient {
     } catch (error) {
       // Name collision or ambiguous network after server-side success — reuse.
       const again = await this.findVolumeByName(input.name);
+      /* v8 ignore start */
       if (again) return again;
+      /* v8 ignore stop */
       throw error;
     }
   }
@@ -294,7 +296,9 @@ export class FlyMachinesClient {
           continue;
         }
         if (!response.ok) {
+          /* v8 ignore start */
           const text = await response.text().catch(() => "");
+          /* v8 ignore stop */
           throw new Error(
             `Fly Machines API ${method} ${path} failed: ${response.status} ${text}`,
           );

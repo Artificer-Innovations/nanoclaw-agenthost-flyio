@@ -72,6 +72,10 @@ describe("coverage gaps", () => {
     expect(runnerResourcesDir(undefined, root)).toContain(
       "skills/add-agenthost-flyio/resources/runner",
     );
+    expect(resourcesDir()).toContain("skills/add-agenthost-flyio/resources");
+    expect(runnerResourcesDir()).toContain(
+      "skills/add-agenthost-flyio/resources/runner",
+    );
 
     const fakePkg = mkdtempSync(path.join(tmpdir(), "fake-pkg-"));
     mkdirSync(path.join(fakePkg, "packages/host/src"), { recursive: true });
